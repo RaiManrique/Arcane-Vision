@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+models/*.tmp
+.DS_Store
