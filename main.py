@@ -31,6 +31,7 @@ from game_entities import (
     VoidLaser,
     WizardAvatar,
     draw_glow_circle,
+    draw_padlock_icon,
     draw_runic_circle,
     segment_circle_collision,
 )
@@ -174,7 +175,9 @@ class ArcaneVisionGame:
 
         # Botones interactivos del HUD en coordenadas del lienzo 1280x720
         self.fullscreen_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 224, 14, 208, 36)
-        self.start_btn_rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 170, 560, 340, 56)
+        self.start_btn_rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 170, 588, 340, 54)
+        self.special_mode_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 134, config.SCREEN_HEIGHT - 87, 108, 24)
+        self.lock_badge_rect = pygame.Rect(512, config.SCREEN_HEIGHT - 74, 132, 58)
 
         # Estado del juego
         self.running = True
@@ -196,6 +199,12 @@ class ArcaneVisionGame:
         self.charge_tick_timer = 0.0
         self.prev_mouth_open = False
         self.prev_vision_spell = 1
+
+        # Barra de energía del tiro especial y selector de los 2 tipos
+        self.special_energy = 0.0
+        self.special_was_ready = False
+        self.special_mode_override = "auto"  # "auto" | "scatter" | "heavy"
+        self.active_special_preview = "scatter"
 
         # Progresión de oleadas
         self.wave = 1
@@ -259,6 +268,8 @@ class ArcaneVisionGame:
 
     def _start_new_game(self) -> None:
         self.wizard.reset()
+        self.shield.reset()
+        self.vision.reset_spell_lock()
         self.particles.clear()
         self.floating_texts.clear()
         self.player_projectiles.clear()
@@ -276,11 +287,60 @@ class ArcaneVisionGame:
         self.kills = 0
         self.reflected_count = 0
         self.overcharge_count = 0
+        self.special_energy = 0.0
+        self.special_was_ready = False
         self.charge_level = 0.0
         self.fire_cooldown = 0.0
+        self.prev_mouth_open = False
         self.mode = "playing"
         self.audio.play("wave_start", 0.85)
-        self._show_toast("¡Oleada 1 iniciada! Muestra 1-4 dedos y abre la palma para atacar")
+        self._show_toast("¡Oleada 1! 1-4 dedos eligen hechizo • Puño bloquea/desbloquea • Palma dispara")
+
+    def _add_special_energy(self, amount: float) -> None:
+        if amount <= 0.0:
+            return
+        self.special_energy = min(config.SPECIAL_ENERGY_MAX, self.special_energy + amount)
+        if self.special_energy >= config.SPECIAL_ENERGY_MAX and not self.special_was_ready:
+            self.special_was_ready = True
+            self.audio.play("special_ready", 0.85)
+            self.particles.emit_ring(self.wizard.x, self.wizard.y, config.COLOR_OVERCHARGE_AURA, max_radius=95.0, duration=0.45)
+            self._show_toast("¡ESPECIAL LISTO! Abre la boca (3-5 dedos: Nova Dispersa | 1-2 dedos: Lanza Titánica)", 3.4)
+
+    def _cycle_special_mode(self) -> None:
+        order = ("auto", "scatter", "heavy")
+        idx = order.index(self.special_mode_override) if self.special_mode_override in order else 0
+        self.special_mode_override = order[(idx + 1) % len(order)]
+        self.audio.play("spell_switch", 0.8)
+        labels = {
+            "auto": "Especial: AUTO por gesto (3-5 dedos: Nova | 1-2 dedos: Lanza)",
+            "scatter": "Especial fijado: NOVA DISPERSA (enemigos pequeños dispersos)",
+            "heavy": "Especial fijado: LANZA TITÁNICA (enemigos grandes y jefes)",
+        }
+        self._show_toast(labels[self.special_mode_override], 2.8)
+
+    def _resolve_special_type(self, vs: VisionState) -> str:
+        if self.special_mode_override in ("scatter", "heavy"):
+            return self.special_mode_override
+        if vs.dominant_present:
+            if vs.dominant_fingers in (1, 2):
+                return "heavy"
+            return "scatter"
+        # Respaldo inteligente sin mano detectada
+        has_heavy_target = any(e.alive and (e.is_boss or e.shield_element is not None) for e in self.enemies)
+        return "heavy" if has_heavy_target else "scatter"
+
+    def _handle_lock_toggle_feedback(self, locked: bool, pos: tuple[float, float]) -> None:
+        self.audio.play("spell_lock" if locked else "spell_unlock", 0.85)
+        col = config.COLOR_LOCK_ACTIVE if locked else config.SPELLS[self.selected_spell].color
+        self.particles.emit_ring(pos[0], pos[1], col, max_radius=68.0, duration=0.28, width=4)
+        self.floating_texts.append(
+            FloatingText("¡ATAQUE BLOQUEADO!" if locked else "DESBLOQUEADO", pos[0], pos[1] - 48.0, col, life=0.9, max_life=0.9)
+        )
+        spec = config.SPELLS[self.selected_spell]
+        if locked:
+            self._show_toast(f"Ataque BLOQUEADO en {spec.name} (puño o [L] para desbloquear)", 2.4)
+        else:
+            self._show_toast("Ataque DESBLOQUEADO — muestra 1 a 4 dedos para cambiar hechizo", 2.2)
 
     def _show_toast(self, text: str, duration: float = 2.6) -> None:
         self.toast_text = text
@@ -304,6 +364,11 @@ class ArcaneVisionGame:
                 if self.fullscreen_btn_rect.collidepoint(cx, cy):
                     is_fs = self.display.toggle_fullscreen()
                     self._show_toast("Pantalla completa activada" if is_fs else "Modo ventana restaurado", 1.8)
+                elif self.special_mode_btn_rect.collidepoint(cx, cy):
+                    self._cycle_special_mode()
+                elif self.lock_badge_rect.collidepoint(cx, cy):
+                    locked = self.vision.toggle_spell_lock()
+                    self._handle_lock_toggle_feedback(locked, vision_state.dominant_pos)
                 elif self.mode in ("title", "gameover") and self.start_btn_rect.collidepoint(cx, cy):
                     self._start_new_game()
             elif event.type == pygame.KEYDOWN:
@@ -331,6 +396,15 @@ class ArcaneVisionGame:
             self._show_toast(f"Modo {label}", 2.6)
             return
 
+        if event.key == pygame.K_l:
+            locked = self.vision.toggle_spell_lock()
+            self._handle_lock_toggle_feedback(locked, vision_state.dominant_pos)
+            return
+
+        if event.key == pygame.K_e:
+            self._cycle_special_mode()
+            return
+
         if event.key == pygame.K_m:
             muted = self.audio.toggle_mute()
             self._show_toast("Audio silenciado" if muted else "Audio activado", 1.6)
@@ -344,8 +418,8 @@ class ArcaneVisionGame:
             self._start_new_game()
             return
 
-        # Selección de hechizo por teclado (respaldo si no hay mano dominante en cámara)
-        if not vision_state.dominant_present:
+        # Selección de hechizo por teclado (respaldo si no hay mano dominante y no está bloqueado)
+        if not vision_state.dominant_present and not vision_state.spell_locked:
             key_to_spell = {
                 pygame.K_1: 1,
                 pygame.K_2: 2,
@@ -354,6 +428,7 @@ class ArcaneVisionGame:
             }
             if event.key in key_to_spell:
                 self.selected_spell = key_to_spell[event.key]
+                self.vision.state.selected_spell = self.selected_spell
                 self.audio.play("spell_switch", 0.65)
 
     # ------------------------------------------------------------------
@@ -373,21 +448,50 @@ class ArcaneVisionGame:
             if self.shake_timer <= 0.0:
                 self.shake_strength = 0.0
 
-        # Sincronizar selección de hechizo con MediaPipe (cuando hay mano dominante)
-        if vs.dominant_present and vs.selected_spell != self.prev_vision_spell:
-            self.prev_vision_spell = vs.selected_spell
-            self.selected_spell = vs.selected_spell
-            self.audio.play("spell_switch", 0.6)
-        elif vs.dominant_present:
-            self.selected_spell = vs.selected_spell
+        # Evento de bloqueo/desbloqueo de ataque al cerrar puño
+        if vs.lock_toggled_event:
+            self._handle_lock_toggle_feedback(vs.spell_locked, vs.dominant_pos)
 
-        # Actualizar escudo deflector angular (visible incluso en pantalla de título para calibrar)
+        # Sincronizar selección de hechizo con MediaPipe (solo cuando no está bloqueado)
+        if vs.dominant_present and not vs.spell_locked:
+            if vs.selected_spell != self.prev_vision_spell:
+                self.prev_vision_spell = vs.selected_spell
+                self.selected_spell = vs.selected_spell
+                self.audio.play("spell_switch", 0.6)
+            else:
+                self.selected_spell = vs.selected_spell
+
+        # Tipo de especial previsualizado en tiempo real
+        self.active_special_preview = self._resolve_special_type(vs)
+
+        # Actualizar escudo deflector angular con barra de tiempo, regeneración y cooldown
         keys = pygame.key.get_pressed()
         kb_shield = not vs.shield_present and keys[pygame.K_LSHIFT]
-        shield_active = vs.shield_active or kb_shield
+        shield_want_active = vs.shield_active or kb_shield
         shield_pos = vs.shield_pos if vs.shield_present else (self.wizard.x, self.wizard.y - 86.0)
         shield_angle = vs.shield_angle if vs.shield_present else 0.0
-        self.shield.update(shield_active, shield_pos, shield_angle, dt)
+        shield_event = self.shield.update(
+            want_active=shield_want_active,
+            pos=shield_pos,
+            angle=shield_angle,
+            dt=dt,
+            allow_drain=(self.mode == "playing"),
+        )
+        if shield_event == "overheated":
+            self.audio.play("shield_overheat", 0.92)
+            self._add_shake(6.0, 0.20)
+            self.particles.emit_ring(shield_pos[0], shield_pos[1], config.COLOR_SHIELD_OVERHEAT, max_radius=82.0, duration=0.35)
+            self.particles.emit_burst(shield_pos[0], shield_pos[1], config.COLOR_SHIELD_OVERHEAT, count=26)
+            self.floating_texts.append(
+                FloatingText("¡ESCUDO ENFRIANDO!", shield_pos[0], shield_pos[1] - 32.0, config.COLOR_SHIELD_OVERHEAT, life=1.1, max_life=1.1)
+            )
+            self._show_toast(f"Escudo agotado — enfriamiento de {config.SHIELD_OVERHEAT_COOLDOWN:.1f}s", 2.8)
+        elif shield_event == "cooled_down":
+            self.audio.play("shield_ready", 0.8)
+            self.particles.emit_ring(shield_pos[0], shield_pos[1], config.COLOR_SHIELD_PRIMARY, max_radius=64.0, duration=0.28)
+            self.floating_texts.append(
+                FloatingText("¡ESCUDO LISTO!", shield_pos[0], shield_pos[1] - 28.0, config.COLOR_SHIELD_PRIMARY, life=0.85, max_life=0.85)
+            )
 
         # Movimiento lateral del mago (inclinación de cabeza + respaldo de flechas)
         kb_move = (int(keys[pygame.K_RIGHT] or keys[pygame.K_d]) - int(keys[pygame.K_LEFT] or keys[pygame.K_a]))
@@ -418,6 +522,7 @@ class ArcaneVisionGame:
 
     def _update_meditation(self, dt: float) -> None:
         self.charge_level = max(0.0, self.charge_level - config.CHARGE_DECAY_RATE * dt)
+        self.shield.restore_during_meditation(dt)
         self.meditation_timer -= dt
 
         prev_hp = int(self.wizard.hp)
@@ -458,45 +563,56 @@ class ArcaneVisionGame:
         # 2. Spawner de enemigos según la oleada
         self._update_spawner(dt)
 
-        # 3. Conjuración bucal (carga + disparo gigante sobrecargado al cerrar) y disparo rápido (5 dedos)
+        # 3. Barra de energía especial (recarga pasiva lenta + combate) y disparo bucal
+        self._add_special_energy(config.SPECIAL_ENERGY_PASSIVE_REGEN * dt)
+        special_ready = self.special_energy >= config.SPECIAL_ENERGY_MAX
+
         self.fire_cooldown = max(0.0, self.fire_cooldown - dt)
         mouth_is_open = vs.mouth_open or (not vs.face_present and keys[pygame.K_c])
         cast_origin = vs.dominant_pos if vs.dominant_present else (self.wizard.x, self.wizard.y - 44.0)
 
-        if mouth_is_open:
+        if mouth_is_open and special_ready:
             self.charge_level = min(1.0, self.charge_level + config.CHARGE_FILL_RATE * dt)
             self.charge_tick_timer -= dt
             if self.charge_tick_timer <= 0.0:
-                self.charge_tick_timer = 0.28
+                self.charge_tick_timer = 0.25
                 self.audio.play("charge_tick", 0.35 + 0.35 * self.charge_level)
-            # Partículas atraídas hacia el círculo rúnico de la mano
-            if random.random() < 0.65:
+            # Partículas atraídas hacia el círculo rúnico según el tipo de especial activo
+            if random.random() < 0.7:
                 ang = random.uniform(0.0, math.tau)
-                dist = 55.0 + 45.0 * self.charge_level
+                dist = 58.0 + 48.0 * self.charge_level
                 px = cast_origin[0] + math.cos(ang) * dist
                 py = cast_origin[1] + math.sin(ang) * dist
                 col = (
-                    config.COLOR_OVERCHARGE_AURA
-                    if self.charge_level >= config.OVERCHARGE_MIN_CHARGE
-                    else config.SPELLS[self.selected_spell].color
+                    config.COLOR_SPECIAL_SCATTER
+                    if self.active_special_preview == "scatter"
+                    else config.COLOR_SPECIAL_HEAVY
                 )
-                self.particles.emit_trail(px, py, col, radius=4.0, life=0.22)
+                self.particles.emit_trail(px, py, col, radius=4.2, life=0.22)
         else:
-            if self.prev_mouth_open and self.charge_level >= config.OVERCHARGE_MIN_CHARGE:
-                self._fire_overcharged_spell(cast_origin, self.charge_level)
+            if (
+                self.prev_mouth_open
+                and not mouth_is_open
+                and special_ready
+                and self.charge_level >= config.OVERCHARGE_MIN_CHARGE
+            ):
+                self.special_energy = 0.0
+                self.special_was_ready = False
+                self._fire_special_attack(cast_origin, self.charge_level, self.active_special_preview)
                 self.charge_level = 0.0
             else:
                 self.charge_level = max(0.0, self.charge_level - config.CHARGE_DECAY_RATE * dt)
 
-            # Disparo rápido con palma completa (5 dedos) o Espacio si no hay mano
-            rapid_fire = vs.rapid_fire_active or (not vs.dominant_present and keys[pygame.K_SPACE])
-            if rapid_fire and self.fire_cooldown <= 0.0:
-                self._fire_basic_spell(cast_origin)
+            # Disparo rápido con palma abierta (o Espacio si no hay mano) cuando no se canaliza especial
+            if not (mouth_is_open and special_ready):
+                rapid_fire = vs.rapid_fire_active or (not vs.dominant_present and keys[pygame.K_SPACE])
+                if rapid_fire and self.fire_cooldown <= 0.0:
+                    self._fire_basic_spell(cast_origin)
 
         self.prev_mouth_open = mouth_is_open
 
-        # 4. Actualizar proyectiles del jugador
-        self.player_projectiles = [p for p in self.player_projectiles if p.update(dt, self.particles)]
+        # 4. Actualizar proyectiles del jugador (con guía buscadora para Nova Dispersa)
+        self.player_projectiles = [p for p in self.player_projectiles if p.update(dt, self.particles, self.enemies)]
 
         # 5. Actualizar enemigos y detectar brechas en la línea inferior
         survivors: list[Enemy] = []
@@ -672,33 +788,108 @@ class ArcaneVisionGame:
         self.particles.emit_burst(origin[0], origin[1] - 10.0, spec.color, count=6, speed_range=(40, 140), life_range=(0.12, 0.25))
         self.audio.play(f"spell_{spec.spell_id}", 0.72)
 
-    def _fire_overcharged_spell(self, origin: tuple[float, float], charge: float) -> None:
+    def _fire_special_attack(self, origin: tuple[float, float], charge: float, special_kind: str) -> None:
+        """Lanza uno de los 2 tiros especiales bucales tras llenar la barra al 100%."""
         spec = config.SPELLS[self.selected_spell]
-        aim_angle = self._aim_direction_with_assist(origin)
-        scale = 0.75 + 0.55 * charge
+        self.overcharge_count += 1
+
+        if special_kind == "scatter":
+            # TIPO 1: NOVA DISPERSA — Lluvia de 9 cometas buscadores para enemigos pequeños y dispersos
+            alive_enemies = sorted(
+                (e for e in self.enemies if e.alive),
+                key=lambda e: (e.max_hp, -e.y),
+            )
+            count = config.SPECIAL_SCATTER_COUNT
+            base_angle = -math.pi * 0.5
+            dmg = config.SPECIAL_SCATTER_DAMAGE * (0.85 + 0.30 * charge)
+
+            for i in range(count):
+                frac = (i / max(count - 1, 1)) - 0.5
+                ang = base_angle + math.radians(frac * config.SPECIAL_SCATTER_SPREAD_DEG)
+                target_id = alive_enemies[i % len(alive_enemies)].entity_id if alive_enemies else None
+                self.player_projectiles.append(
+                    PlayerProjectile(
+                        x=origin[0],
+                        y=origin[1] - 10.0,
+                        vx=math.cos(ang) * config.SPECIAL_SCATTER_SPEED,
+                        vy=math.sin(ang) * config.SPECIAL_SCATTER_SPEED,
+                        spell_id=spec.spell_id,
+                        damage=dmg,
+                        radius=config.SPECIAL_SCATTER_RADIUS,
+                        color=config.COLOR_SPECIAL_SCATTER,
+                        core_color=config.COLOR_OVERCHARGE_CORE,
+                        overcharged=True,
+                        is_crit=True,
+                        special_kind="scatter",
+                        piercing=False,
+                        homing_turn_rate=config.SPECIAL_SCATTER_TURN_RATE,
+                        target_enemy_id=target_id,
+                    )
+                )
+
+            self.audio.play("special_scatter", 0.95)
+            self._add_shake(7.5, 0.22)
+            self.particles.emit_ring(origin[0], origin[1], config.COLOR_SPECIAL_SCATTER, max_radius=190.0, duration=0.40, width=5)
+            self.particles.emit_burst(origin[0], origin[1], config.COLOR_SPECIAL_SCATTER, count=36, speed_range=(100, 360))
+            self.floating_texts.append(
+                FloatingText("¡NOVA DISPERSA!", origin[0], origin[1] - 48.0, config.COLOR_SPECIAL_SCATTER, life=1.1, max_life=1.1)
+            )
+            return
+
+        # TIPO 2: LANZA TITÁNICA — Proyectil gigante perforante para enemigos grandes / Centinelas / Jefe
+        aim_angle = self._aim_heavy_target(origin)
+        scale = 0.85 + 0.35 * charge
         self.player_projectiles.append(
             PlayerProjectile(
                 x=origin[0],
-                y=origin[1] - 14.0,
-                vx=math.cos(aim_angle) * spec.overcharge_speed,
-                vy=math.sin(aim_angle) * spec.overcharge_speed,
+                y=origin[1] - 16.0,
+                vx=math.cos(aim_angle) * config.SPECIAL_HEAVY_SPEED,
+                vy=math.sin(aim_angle) * config.SPECIAL_HEAVY_SPEED,
                 spell_id=spec.spell_id,
-                damage=spec.overcharge_damage * scale,
-                radius=spec.overcharge_radius * (0.85 + 0.25 * charge),
+                damage=config.SPECIAL_HEAVY_DAMAGE * scale,
+                radius=config.SPECIAL_HEAVY_RADIUS * (0.9 + 0.2 * charge),
                 color=spec.color,
                 core_color=config.COLOR_OVERCHARGE_CORE,
                 overcharged=True,
                 is_crit=True,
+                special_kind="heavy",
+                piercing=True,
             )
         )
-        self.overcharge_count += 1
-        self.audio.play("overcharge_fire", 0.95)
-        self._add_shake(8.5, 0.22)
-        self.particles.emit_ring(origin[0], origin[1], config.COLOR_OVERCHARGE_AURA, max_radius=110.0, duration=0.35, width=5)
-        self.particles.emit_burst(origin[0], origin[1], config.COLOR_OVERCHARGE_AURA, count=28, speed_range=(90, 320))
+        self.audio.play("overcharge_fire", 0.98)
+        self._add_shake(11.0, 0.28)
+        self.particles.emit_ring(origin[0], origin[1], config.COLOR_SPECIAL_HEAVY, max_radius=130.0, duration=0.38, width=6)
+        self.particles.emit_ring(origin[0], origin[1], spec.color, max_radius=90.0, duration=0.28, width=4)
+        self.particles.emit_burst(origin[0], origin[1], config.COLOR_SPECIAL_HEAVY, count=38, speed_range=(95, 340))
         self.floating_texts.append(
-            FloatingText("¡SOBRECARGA!", origin[0], origin[1] - 46.0, config.COLOR_OVERCHARGE_AURA, life=1.0, max_life=1.0)
+            FloatingText("¡LANZA TITÁNICA!", origin[0], origin[1] - 50.0, config.COLOR_SPECIAL_HEAVY, life=1.1, max_life=1.1)
         )
+
+    def _aim_heavy_target(self, origin: tuple[float, float]) -> float:
+        """Asistencia suave de Lanza Titánica priorizando jefes y enemigos grandes."""
+        base_angle = -math.pi * 0.5
+        ox, oy = origin
+        max_rad = math.radians(22.0)
+        best_priority = -1.0
+        best_diff = 0.0
+        for enemy in self.enemies:
+            if not enemy.alive or enemy.y >= oy - 16.0:
+                continue
+            dx = enemy.x - ox
+            dy = enemy.y - oy
+            dist = math.hypot(dx, dy)
+            if dist < 1e-3:
+                continue
+            ang = math.atan2(dy, dx)
+            diff = (ang - base_angle + math.pi) % math.tau - math.pi
+            if abs(diff) <= max_rad:
+                priority = enemy.max_hp * (2.5 if enemy.is_boss else 1.0) / max(dist, 80.0)
+                if priority > best_priority:
+                    best_priority = priority
+                    best_diff = diff
+        if best_priority > 0.0:
+            return base_angle + best_diff * 0.6
+        return self._aim_direction_with_assist(origin)
 
     # ------------------------------------------------------------------
     # Colisiones
@@ -719,9 +910,20 @@ class ArcaneVisionGame:
                         spell_id=proj.spell_id,
                         overcharged=proj.overcharged,
                     )
-                    self._handle_enemy_hit_feedback(enemy, proj.x, proj.y, proj.damage, proj.color, proj.is_crit, outcome, required_el)
+                    self._handle_enemy_hit_feedback(
+                        enemy,
+                        proj.x,
+                        proj.y,
+                        proj.damage,
+                        proj.color,
+                        proj.is_crit,
+                        outcome,
+                        required_el,
+                        from_special=proj.overcharged,
+                        spell_id=proj.spell_id,
+                    )
 
-                    if not proj.overcharged:
+                    if not proj.piercing:
                         consumed = True
                         break
             if not consumed:
@@ -751,6 +953,7 @@ class ArcaneVisionGame:
                     self.shield.trigger_flash()
                     self.reflected_count += 1
                     self.score += 60
+                    self._add_special_energy(config.SPECIAL_ENERGY_PER_REFLECT)
                     self.audio.play("shield_deflect", 0.9)
                     self._add_shake(4.5, 0.12)
                     self.particles.emit_ring(orb.x, orb.y, config.COLOR_SHIELD_PRIMARY, max_radius=62.0, duration=0.25)
@@ -833,6 +1036,8 @@ class ArcaneVisionGame:
         is_crit: bool,
         outcome: str,
         required_element: int | None,
+        from_special: bool = False,
+        spell_id: int | None = None,
     ) -> None:
         if outcome == "blocked":
             self.particles.emit_burst(hx, hy, (200, 210, 240), count=6, speed_range=(40, 120), life_range=(0.12, 0.25))
@@ -848,6 +1053,8 @@ class ArcaneVisionGame:
                     )
                 )
         elif outcome == "shield_broken":
+            if not from_special:
+                self._add_special_energy(config.SPECIAL_ENERGY_PER_SHIELD_BREAK)
             self.audio.play("shield_break", 0.9)
             self._add_shake(5.5, 0.14)
             ring_col = config.SPELLS[required_element].color if required_element in config.SPELLS else color
@@ -859,6 +1066,9 @@ class ArcaneVisionGame:
         elif outcome == "killed":
             self.kills += 1
             self.score += enemy.score_value
+            if not from_special:
+                kill_bonus = config.SPECIAL_ENERGY_PER_KILL * (1.8 if enemy.is_boss else 1.0)
+                self._add_special_energy(kill_bonus)
             self.audio.play("enemy_die", 0.85 if not enemy.is_boss else 1.0)
             self._add_shake(10.0 if enemy.is_boss else 4.0, 0.25 if enemy.is_boss else 0.10)
             self.particles.emit_ring(enemy.x, enemy.y, color, max_radius=enemy.radius + (85 if enemy.is_boss else 40))
@@ -868,6 +1078,9 @@ class ArcaneVisionGame:
                 FloatingText(label, enemy.x, enemy.y - 12, config.COLOR_TEXT_GOLD, life=1.1 if enemy.is_boss else 0.75, max_life=1.1 if enemy.is_boss else 0.75)
             )
         else:
+            if not from_special:
+                hit_gain = config.SPECIAL_ENERGY_PER_HIT * (0.55 if spell_id == 3 else 1.0)
+                self._add_special_energy(hit_gain)
             self.audio.play("enemy_hit", 0.65)
             self.particles.emit_burst(hx, hy, color, count=10, speed_range=(50, 170), life_range=(0.15, 0.35))
             txt = f"-{int(round(damage))}!" if is_crit else f"-{int(round(damage))}"
@@ -947,42 +1160,94 @@ class ArcaneVisionGame:
 
     def _draw_hand_overlays(self, surface: pygame.Surface, vs: VisionState) -> None:
         spec = config.SPELLS[self.selected_spell]
+        special_ready = self.special_energy >= config.SPECIAL_ENERGY_MAX
 
-        # Mano dominante: círculo rúnico que crece con la carga bucal
+        # Mano dominante: círculo rúnico + candado de bloqueo + vista previa del tipo de especial
         if vs.dominant_present:
-            radius = 38.0 + 48.0 * self.charge_level + (8.0 if vs.rapid_fire_active else 0.0)
-            ring_color = (
-                config.COLOR_OVERCHARGE_AURA
-                if self.charge_level >= config.OVERCHARGE_MIN_CHARGE
-                else spec.color
-            )
+            channeling_special = self.charge_level > 0.04 and (special_ready or self.mode == "title")
+            radius = 38.0 + 50.0 * self.charge_level + (8.0 if vs.rapid_fire_active else 0.0)
+            if channeling_special:
+                ring_color = (
+                    config.COLOR_SPECIAL_SCATTER
+                    if self.active_special_preview == "scatter"
+                    else config.COLOR_SPECIAL_HEAVY
+                )
+            elif vs.spell_locked:
+                ring_color = config.COLOR_LOCK_ACTIVE
+            else:
+                ring_color = spec.color
+
             draw_runic_circle(
                 surface,
                 vs.dominant_pos,
                 radius,
                 ring_color,
-                self.anim_time * (2.4 + 4.5 * self.charge_level),
+                self.anim_time * (2.4 + 4.8 * self.charge_level),
                 charge=self.charge_level,
                 sides=5 + (self.selected_spell % 3),
                 alpha=230,
             )
-            if self.charge_level >= config.OVERCHARGE_MIN_CHARGE:
-                tag_txt = "¡CIERRA LA BOCA!"
-                tag_col = config.COLOR_OVERCHARGE_AURA
+
+            # Vista previa visual del patrón del especial al abrir la boca
+            if channeling_special:
+                hx, hy = vs.dominant_pos
+                if self.active_special_preview == "scatter":
+                    for i in range(5):
+                        frac = (i / 4.0) - 0.5
+                        ang = -math.pi * 0.5 + math.radians(frac * config.SPECIAL_SCATTER_SPREAD_DEG)
+                        end_pt = (hx + math.cos(ang) * (radius + 32), hy + math.sin(ang) * (radius + 32))
+                        pygame.draw.line(surface, config.COLOR_SPECIAL_SCATTER, (hx, hy), end_pt, 2)
+                else:
+                    pygame.draw.line(surface, config.COLOR_SPECIAL_HEAVY, (hx, hy), (hx, hy - radius - 52), 4)
+                    pygame.draw.circle(surface, config.COLOR_OVERCHARGE_CORE, (int(hx), int(hy)), max(8, int(18 * self.charge_level)), 2)
+
+            # Ícono de candado sobre el círculo rúnico si el ataque está bloqueado
+            if vs.spell_locked:
+                lock_pos = (vs.dominant_pos[0] + radius * 0.72, vs.dominant_pos[1] - radius * 0.72)
+                pygame.draw.circle(surface, (14, 18, 36), (int(lock_pos[0]), int(lock_pos[1])), 15)
+                pygame.draw.circle(surface, config.COLOR_LOCK_ACTIVE, (int(lock_pos[0]), int(lock_pos[1])), 15, 2)
+                draw_padlock_icon(surface, lock_pos, locked=True, color=config.COLOR_LOCK_ACTIVE, scale=0.85)
+
+            if channeling_special and self.charge_level >= config.OVERCHARGE_MIN_CHARGE:
+                sp_name = "NOVA DISPERSA" if self.active_special_preview == "scatter" else "LANZA TITÁNICA"
+                tag_txt = f"{sp_name} • ¡CIERRA BOCA!"
+                tag_col = ring_color
+            elif channeling_special:
+                sp_name = "Nova Dispersa" if self.active_special_preview == "scatter" else "Lanza Titánica"
+                tag_txt = f"Cargando {sp_name}..."
+                tag_col = ring_color
             elif vs.rapid_fire_active:
-                tag_txt = f"DISPARANDO • {spec.short_name}"
+                lock_txt = " [BLOQ]" if vs.spell_locked else ""
+                tag_txt = f"DISPARANDO • {spec.short_name}{lock_txt}"
                 tag_col = spec.core_color
+            elif vs.spell_locked:
+                tag_txt = f"BLOQUEADO ({self.selected_spell}) • {spec.short_name}"
+                tag_col = config.COLOR_LOCK_ACTIVE
             else:
                 tag_txt = f"ATAQUE ({self.selected_spell}) • {spec.short_name}"
                 tag_col = spec.color
             lbl = self.font_small.render(tag_txt, True, tag_col)
             surface.blit(lbl, lbl.get_rect(center=(int(vs.dominant_pos[0]), int(vs.dominant_pos[1] + radius + 16))))
 
-        # Mano secundaria: escudo deflector angular (o anillo tenue si palma cerrada)
-        if self.shield.active:
+        # Mano secundaria: escudo deflector angular, estado de enfriamiento o reposo
+        if self.shield.overheated:
+            if vs.shield_present:
+                draw_runic_circle(
+                    surface,
+                    vs.shield_pos,
+                    34.0,
+                    config.COLOR_SHIELD_OVERHEAT,
+                    -self.anim_time * 3.0,
+                    charge=0.0,
+                    sides=4,
+                    alpha=175,
+                )
+                lbl = self.font_small.render(f"ENFRIANDO {self.shield.cooldown_timer:0.1f}s", True, config.COLOR_SHIELD_OVERHEAT)
+                surface.blit(lbl, lbl.get_rect(center=(int(vs.shield_pos[0]), int(vs.shield_pos[1] + 46))))
+        elif self.shield.active:
             self.shield.draw(surface)
-            lbl = self.font_small.render("ESCUDO ACTIVO", True, config.COLOR_SHIELD_GLOW)
-            surface.blit(lbl, lbl.get_rect(center=(int(self.shield.x), int(self.shield.y + 32))))
+            lbl = self.font_small.render(f"ESCUDO {int(self.shield.energy)}%", True, config.COLOR_SHIELD_GLOW)
+            surface.blit(lbl, lbl.get_rect(center=(int(self.shield.x), int(self.shield.y + 36))))
         elif vs.shield_present:
             draw_runic_circle(
                 surface,
@@ -994,7 +1259,7 @@ class ArcaneVisionGame:
                 sides=4,
                 alpha=115,
             )
-            lbl = self.font_small.render("ESCUDO (abre palma)", True, config.COLOR_TEXT_MUTED)
+            lbl = self.font_small.render(f"ESCUDO {int(self.shield.energy)}% (abre palma)", True, config.COLOR_TEXT_MUTED)
             surface.blit(lbl, lbl.get_rect(center=(int(vs.shield_pos[0]), int(vs.shield_pos[1] + 40))))
 
     def _draw_panel(self, surface: pygame.Surface, rect: pygame.Rect, border_color=config.COLOR_PANEL_BORDER) -> None:
@@ -1004,30 +1269,50 @@ class ArcaneVisionGame:
         surface.blit(panel, rect.topleft)
 
     def _draw_hud(self, surface: pygame.Surface, vs: VisionState) -> None:
-        # 1. Panel superior izquierdo: Vida, Puntuación y Modo Diestro/Zurdo
-        left_panel = pygame.Rect(16, 14, 300, 96)
-        self._draw_panel(surface, left_panel)
+        # 1. Panel superior izquierdo: Vida, Barra de Escudo (con cooldown), Puntuación y Modo
+        left_panel = pygame.Rect(16, 14, 316, 128)
+        self._draw_panel(
+            surface,
+            left_panel,
+            border_color=config.COLOR_SHIELD_OVERHEAT if self.shield.overheated else config.COLOR_PANEL_BORDER,
+        )
 
+        # Barra de Vida
         hp_ratio = max(0.0, self.wizard.hp / max(self.wizard.max_hp, 1.0))
         hp_col = (
             config.COLOR_HP_HIGH
             if hp_ratio > 0.55
             else (config.COLOR_HP_MID if hp_ratio > 0.25 else config.COLOR_HP_LOW)
         )
-        bar_rect = pygame.Rect(30, 26, 200, 18)
-        pygame.draw.rect(surface, (20, 24, 42), bar_rect, border_radius=6)
-        pygame.draw.rect(surface, hp_col, (bar_rect.x, bar_rect.y, int(bar_rect.w * hp_ratio), bar_rect.h), border_radius=6)
-        pygame.draw.rect(surface, (180, 195, 230), bar_rect, width=1, border_radius=6)
+        bar_rect = pygame.Rect(30, 26, 200, 16)
+        pygame.draw.rect(surface, (20, 24, 42), bar_rect, border_radius=5)
+        pygame.draw.rect(surface, hp_col, (bar_rect.x, bar_rect.y, int(bar_rect.w * hp_ratio), bar_rect.h), border_radius=5)
+        pygame.draw.rect(surface, (180, 195, 230), bar_rect, width=1, border_radius=5)
+        hp_txt = self.font_small.render(f"HP {int(round(self.wizard.hp))}", True, config.COLOR_TEXT_MAIN)
+        surface.blit(hp_txt, (238, 24))
 
-        hp_txt = self.font_small.render(f"{int(round(self.wizard.hp))}/{int(self.wizard.max_hp)}", True, config.COLOR_TEXT_MAIN)
-        surface.blit(hp_txt, (238, 25))
+        # Barra de Escudo (tiempo de uso / recuperación lenta / cooldown por sobrecalentamiento)
+        sh_rect = pygame.Rect(30, 50, 200, 14)
+        pygame.draw.rect(surface, (20, 24, 42), sh_rect, border_radius=5)
+        if self.shield.overheated:
+            cool_prog = 1.0 - self.shield.cooldown_ratio
+            blink = int(self.anim_time * 10) % 2 == 0
+            sh_col = config.COLOR_SHIELD_OVERHEAT if blink else (180, 50, 48)
+            pygame.draw.rect(surface, sh_col, (sh_rect.x, sh_rect.y, int(sh_rect.w * cool_prog), sh_rect.h), border_radius=5)
+            sh_lbl = self.font_small.render(f"CD {self.shield.cooldown_timer:0.1f}s", True, config.COLOR_SHIELD_OVERHEAT)
+        else:
+            sh_col = config.COLOR_HP_MID if self.shield.energy_ratio < 0.28 else config.COLOR_SHIELD_PRIMARY
+            pygame.draw.rect(surface, sh_col, (sh_rect.x, sh_rect.y, int(sh_rect.w * self.shield.energy_ratio), sh_rect.h), border_radius=5)
+            sh_lbl = self.font_small.render(f"ESC {int(round(self.shield.energy))}%", True, config.COLOR_SHIELD_GLOW)
+        pygame.draw.rect(surface, (140, 185, 220), sh_rect, width=1, border_radius=5)
+        surface.blit(sh_lbl, (238, 47))
 
         score_txt = self.font_medium.render(f"Puntos: {self.score:,}", True, config.COLOR_TEXT_GOLD)
-        surface.blit(score_txt, (30, 50))
+        surface.blit(score_txt, (30, 74))
 
         hand_mode = "ZURDO [H]" if vs.left_handed else "DIESTRO [H]"
         mode_txt = self.font_small.render(f"Mano: {hand_mode}", True, config.COLOR_TEXT_MUTED)
-        surface.blit(mode_txt, (30, 82))
+        surface.blit(mode_txt, (30, 108))
 
         # 2. Panel superior central: Oleada, tiempo restante y barra del Jefe
         center_panel = pygame.Rect(config.SCREEN_WIDTH // 2 - 190, 14, 380, 68)
@@ -1068,87 +1353,129 @@ class ArcaneVisionGame:
         fs_surf = self.font_small.render(fs_label, True, config.COLOR_TEXT_MAIN)
         surface.blit(fs_surf, fs_surf.get_rect(center=self.fullscreen_btn_rect.center))
 
-        # Estado de cámara y audio debajo del botón
         cam_col = config.COLOR_HP_HIGH if vs.camera_available else config.COLOR_HP_MID
         cam_text = "Cámara OK" if vs.camera_available else (vs.camera_status or "Sin cámara")
         audio_text = "Audio OFF [M]" if self.audio.muted or not self.audio.enabled else "Audio ON [M]"
         status_surf = self.font_small.render(f"● {cam_text}  |  {audio_text}", True, cam_col)
         surface.blit(status_surf, (config.SCREEN_WIDTH - status_surf.get_width() - 18, 56))
 
-        # 4. Panel inferior izquierdo: Grimorio de los 4 hechizos
+        # 4. Panel inferior izquierdo: Grimorio de 4 hechizos + Candado de bloqueo (puño / [L])
         dock_x, dock_y = 16, config.SCREEN_HEIGHT - 74
         for idx in range(1, 5):
             spec = config.SPELLS[idx]
-            rect = pygame.Rect(dock_x + (idx - 1) * 124, dock_y, 116, 58)
+            rect = pygame.Rect(dock_x + (idx - 1) * 122, dock_y, 114, 58)
             active = idx == self.selected_spell
-            self._draw_panel(surface, rect, border_color=spec.color if active else (54, 66, 102))
+            border = config.COLOR_LOCK_ACTIVE if (active and vs.spell_locked) else (spec.color if active else (54, 66, 102))
+            self._draw_panel(surface, rect, border_color=border)
             if active:
-                pygame.draw.rect(surface, spec.color, rect.inflate(4, 4), width=2, border_radius=12)
+                pygame.draw.rect(surface, border, rect.inflate(4, 4), width=2, border_radius=12)
             draw_glow_circle(surface, spec.color, (rect.x + 22, rect.y + 29), 11, spec.core_color, 1)
             n_surf = self.font_small.render(str(idx), True, (8, 10, 22))
             surface.blit(n_surf, n_surf.get_rect(center=(rect.x + 22, rect.y + 29)))
             name_surf = self.font_small.render(spec.short_name, True, config.COLOR_TEXT_MAIN if active else config.COLOR_TEXT_MUTED)
-            surface.blit(name_surf, (rect.x + 40, rect.y + 12))
+            surface.blit(name_surf, (rect.x + 39, rect.y + 12))
             sub_txt = f"{idx} dedo" if idx == 1 else f"{idx} dedos"
             sub_surf = self.font_small.render(sub_txt, True, spec.color if active else config.COLOR_TEXT_MUTED)
-            surface.blit(sub_surf, (rect.x + 40, rect.y + 32))
+            surface.blit(sub_surf, (rect.x + 39, rect.y + 32))
 
-        # 5. Panel inferior derecho: Medidor de Carga Bucal (Sobrecarga)
-        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 270, config.SCREEN_HEIGHT - 74, 254, 58)
-        ready = self.charge_level >= config.OVERCHARGE_MIN_CHARGE
-        self._draw_panel(surface, gauge_panel, border_color=config.COLOR_OVERCHARGE_AURA if ready else config.COLOR_PANEL_BORDER)
-        g_lbl = self.font_small.render(
-            "¡SOBRECARGA LISTA!" if ready else "Carga Bucal (abre boca)",
-            True,
-            config.COLOR_OVERCHARGE_AURA if ready else config.COLOR_TEXT_MUTED,
+        # Botón / indicador de bloqueo por puño junto al Grimorio
+        lock_col = config.COLOR_LOCK_ACTIVE if vs.spell_locked else config.COLOR_PANEL_BORDER
+        self._draw_panel(surface, self.lock_badge_rect, border_color=lock_col)
+        draw_padlock_icon(surface, (self.lock_badge_rect.x + 22, self.lock_badge_rect.centery), vs.spell_locked, lock_col, scale=1.0)
+        l_title = self.font_small.render("BLOQUEADO" if vs.spell_locked else "LIBRE", True, lock_col if vs.spell_locked else config.COLOR_TEXT_MAIN)
+        l_hint = self.font_small.render("Puño / [L]", True, config.COLOR_TEXT_MUTED)
+        surface.blit(l_title, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 11))
+        surface.blit(l_hint, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 32))
+
+        # 5. Panel inferior derecho: Barra de Energía Especial (0..100%) + 2 Tipos de Especial
+        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 398, config.SCREEN_HEIGHT - 92, 382, 76)
+        special_ready = self.special_energy >= config.SPECIAL_ENERGY_MAX
+        active_sp_col = (
+            config.COLOR_SPECIAL_SCATTER
+            if self.active_special_preview == "scatter"
+            else config.COLOR_SPECIAL_HEAVY
         )
-        surface.blit(g_lbl, (gauge_panel.x + 14, gauge_panel.y + 8))
+        self._draw_panel(surface, gauge_panel, border_color=active_sp_col if special_ready else config.COLOR_PANEL_BORDER)
 
-        meter = pygame.Rect(gauge_panel.x + 14, gauge_panel.y + 32, gauge_panel.w - 28, 14)
+        energy_pct = int(round(self.special_energy))
+        if special_ready:
+            header_txt = "¡ESPECIAL LISTO! Abre boca"
+            header_col = active_sp_col
+        else:
+            header_txt = f"Barra Especial: {energy_pct}%"
+            header_col = config.COLOR_TEXT_MAIN
+        surface.blit(self.font_small.render(header_txt, True, header_col), (gauge_panel.x + 12, gauge_panel.y + 9))
+
+        # Botón selector de tipo especial [E]
+        mode_labels = {"auto": "[E] Auto", "scatter": "[E] Nova", "heavy": "[E] Lanza"}
+        mode_border = active_sp_col if self.special_mode_override != "auto" else config.COLOR_PANEL_BORDER
+        self._draw_panel(surface, self.special_mode_btn_rect, border_color=mode_border)
+        m_surf = self.font_small.render(mode_labels[self.special_mode_override], True, config.COLOR_TEXT_MAIN)
+        surface.blit(m_surf, m_surf.get_rect(center=self.special_mode_btn_rect.center))
+
+        # Barra principal de llenado (0..100%) + superposición de canalización bucal
+        meter = pygame.Rect(gauge_panel.x + 12, gauge_panel.y + 34, gauge_panel.w - 24, 15)
         pygame.draw.rect(surface, (20, 24, 42), meter, border_radius=5)
-        fill_col = config.COLOR_OVERCHARGE_AURA if ready else config.SPELLS[self.selected_spell].color
-        pygame.draw.rect(surface, fill_col, (meter.x, meter.y, int(meter.w * self.charge_level), meter.h), border_radius=5)
-        # Marca del umbral mínimo de sobrecarga
-        thresh_x = meter.x + int(meter.w * config.OVERCHARGE_MIN_CHARGE)
-        pygame.draw.line(surface, config.COLOR_TEXT_MAIN, (thresh_x, meter.y - 3), (thresh_x, meter.bottom + 3), 2)
+        energy_ratio = max(0.0, min(1.0, self.special_energy / config.SPECIAL_ENERGY_MAX))
+        fill_col = active_sp_col if special_ready else (112, 138, 210)
+        pygame.draw.rect(surface, fill_col, (meter.x, meter.y, int(meter.w * energy_ratio), meter.h), border_radius=5)
+
+        if special_ready and self.charge_level > 0.02:
+            pygame.draw.rect(
+                surface,
+                config.COLOR_OVERCHARGE_CORE,
+                (meter.x, meter.y, int(meter.w * self.charge_level), meter.h),
+                border_radius=5,
+            )
+            thresh_x = meter.x + int(meter.w * config.OVERCHARGE_MIN_CHARGE)
+            pygame.draw.line(surface, (18, 20, 34), (thresh_x, meter.y), (thresh_x, meter.bottom), 2)
+
+        # Leyenda de los 2 tipos de tiro especial
+        nova_col = config.COLOR_SPECIAL_SCATTER if self.active_special_preview == "scatter" else config.COLOR_TEXT_MUTED
+        heavy_col = config.COLOR_SPECIAL_HEAVY if self.active_special_preview == "heavy" else config.COLOR_TEXT_MUTED
+        nova_surf = self.font_small.render("3-5d: Nova (Dispersos)", True, nova_col)
+        heavy_surf = self.font_small.render("1-2d: Lanza (Grandes)", True, heavy_col)
+        surface.blit(nova_surf, (gauge_panel.x + 12, gauge_panel.y + 54))
+        surface.blit(heavy_surf, (gauge_panel.right - heavy_surf.get_width() - 12, gauge_panel.y + 54))
 
     def _draw_title_overlay(self, surface: pygame.Surface, vs: VisionState) -> None:
         dim = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        dim.fill((6, 8, 20, 150))
+        dim.fill((6, 8, 20, 155))
         surface.blit(dim, (0, 0))
 
         title = self.font_title.render("ARCANE VISION", True, config.COLOR_TEXT_GOLD)
         subtitle = self.font_large.render("Duelo de Magos", True, config.SPELLS[1].core_color)
-        surface.blit(title, title.get_rect(center=(config.SCREEN_WIDTH // 2, 165)))
-        surface.blit(subtitle, subtitle.get_rect(center=(config.SCREEN_WIDTH // 2, 218)))
+        surface.blit(title, title.get_rect(center=(config.SCREEN_WIDTH // 2, 145)))
+        surface.blit(subtitle, subtitle.get_rect(center=(config.SCREEN_WIDTH // 2, 196)))
 
-        card = pygame.Rect(config.SCREEN_WIDTH // 2 - 390, 255, 780, 275)
+        card = pygame.Rect(config.SCREEN_WIDTH // 2 - 430, 228, 860, 336)
         self._draw_panel(surface, card, border_color=config.SPELLS[1].color)
 
         lines = [
             ("Mano Dominante (1-4 dedos):", "Elige hechizo — 1 Arcano | 2 Ígneo | 3 Esmeralda | 4 Voltaica"),
-            ("Palma Abierta (5 dedos):", "Disparo rápido del hechizo activo con asistencia suave"),
-            ("Abrir y Cerrar la Boca:", "Carga el círculo mágico y libera un proyectil gigante perforante"),
-            ("Mano Secundaria (palma abierta):", "Escudo Deflector Angular — inclina la mano para rebotar orbes rojos"),
-            ("Inclinar la Cabeza:", "Esquiva lateralmente los ataques y rayos láser del Señor del Vacío"),
-            ("Atajos:", "[F11 / Alt+Enter] Pantalla Completa  •  [H] Zurdo/Diestro  •  [R] Reiniciar  •  [ESC] Salir"),
+            ("Puño Cerrado (0 dedos) / [L]:", "Bloquea o desbloquea el ataque actual para disparar sin cambios accidentales"),
+            ("Palma Abierta:", "Disparo rápido (con ataque bloqueado dispara seguro con 4-5 dedos)"),
+            ("Barra Especial (100% + Boca):", "Al llenarse, abre y cierra la boca: 3-5d Nova Dispersa | 1-2d Lanza Titánica"),
+            ("Escudo Angular (Mano Sec.):", "Tiene barra por tiempo, recupera lento y entra en cooldown si se agota"),
+            ("Inclinar Cabeza:", "Esquiva lateralmente los ataques y rayos láser del Señor del Vacío"),
+            ("Atajos:", "[F11/Alt+Enter] Completa • [H] Zurdo • [E] Tipo Especial • [L] Bloqueo • [R] Reiniciar"),
         ]
-        y = card.y + 24
+        y = card.y + 20
         for heading, desc in lines:
             h_surf = self.font_small.render(heading, True, config.COLOR_TEXT_GOLD)
             d_surf = self.font_small.render(desc, True, config.COLOR_TEXT_MAIN)
-            surface.blit(h_surf, (card.x + 24, y))
-            surface.blit(d_surf, (card.x + 266, y))
+            surface.blit(h_surf, (card.x + 22, y))
+            surface.blit(d_surf, (card.x + 278, y))
             y += 38
 
-        # Indicador biométrico en vivo antes de empezar
+        lock_str = "BLOQUEADO" if vs.spell_locked else "Libre"
         bio_status = (
             f"Rostro: {'OK' if vs.face_present else '...'}   |   "
-            f"Ataque: {vs.dominant_fingers} dedos   |   "
-            f"Escudo: {'ACTIVO' if vs.shield_active else ('OK' if vs.shield_present else '...')}"
+            f"Ataque: {vs.dominant_fingers} dedos ({lock_str})   |   "
+            f"Escudo: {'ACTIVO' if self.shield.active else ('OK' if vs.shield_present else '...')}"
         )
         bio_surf = self.font_small.render(bio_status, True, config.COLOR_MEDITATION)
-        surface.blit(bio_surf, bio_surf.get_rect(center=(config.SCREEN_WIDTH // 2, card.bottom - 18)))
+        surface.blit(bio_surf, bio_surf.get_rect(center=(config.SCREEN_WIDTH // 2, card.bottom - 20)))
 
         # Botón comenzar
         self._draw_panel(surface, self.start_btn_rect, border_color=config.COLOR_TEXT_GOLD)

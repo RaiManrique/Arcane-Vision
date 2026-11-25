@@ -221,6 +221,57 @@ class AudioFX:
         wave = self._chirp(t, 760.0, 1140.0)
         self.sounds["spell_switch"] = self._to_sound(wave * self._adsr(t, 0.002, 0.024) * 0.40)
 
+        # Candado de hechizo (puño): bloquear / desbloquear
+        t = self._time_axis(0.14)
+        lock_wave = (
+            0.6 * np.sin(2.0 * np.pi * 520.0 * t)
+            + 0.4 * self._chirp(t, 780.0, 1040.0)
+        )
+        self.sounds["spell_lock"] = self._to_sound(lock_wave * self._adsr(t, 0.004, 0.045) * 0.58)
+
+        t = self._time_axis(0.14)
+        unlock_wave = (
+            0.6 * np.sin(2.0 * np.pi * 680.0 * t)
+            + 0.4 * self._chirp(t, 920.0, 560.0)
+        )
+        self.sounds["spell_unlock"] = self._to_sound(unlock_wave * self._adsr(t, 0.004, 0.045) * 0.55)
+
+        # Barra de especial lista al 100%
+        t = self._time_axis(0.42)
+        ready = np.zeros_like(t)
+        for idx, freq in enumerate((523.25, 659.25, 783.99, 1046.5)):
+            offset = idx * 0.055
+            mask = t >= offset
+            dt = t[mask] - offset
+            ready[mask] += np.sin(2.0 * np.pi * freq * dt) * np.exp(-dt / 0.14)
+        self.sounds["special_ready"] = self._to_sound(ready * 0.36)
+
+        # Especial Tipo A: Nova Dispersa (cascada estelar brillante)
+        t = self._time_axis(0.52)
+        nova = np.zeros_like(t)
+        for idx, freq in enumerate((620.0, 840.0, 1080.0, 1340.0, 1620.0)):
+            offset = idx * 0.038
+            mask = t >= offset
+            dt = t[mask] - offset
+            nova[mask] += np.sin(2.0 * np.pi * freq * dt) * np.exp(-dt / 0.16)
+        whoosh = np.convolve(rng.standard_normal(t.size).astype(np.float32), np.ones(5) / 5.0, mode="same")
+        self.sounds["special_scatter"] = self._to_sound(
+            np.tanh((0.55 * nova + 0.35 * whoosh * self._adsr(t, 0.008, 0.14)) * 1.15) * 0.85
+        )
+
+        # Escudo sobrecalentado (barra agotada -> inicia cooldown)
+        t = self._time_axis(0.42)
+        overheat = (
+            0.65 * self._chirp(t, 760.0, 145.0)
+            + 0.45 * rng.standard_normal(t.size).astype(np.float32) * np.exp(-t / 0.14)
+        )
+        self.sounds["shield_overheat"] = self._to_sound(np.tanh(overheat * 1.35) * self._adsr(t, 0.005, 0.17) * 0.85)
+
+        # Escudo enfriado y disponible nuevamente
+        t = self._time_axis(0.26)
+        shield_ok = 0.55 * self._chirp(t, 480.0, 960.0) + 0.45 * np.sin(2.0 * np.pi * 1180.0 * t)
+        self.sounds["shield_ready"] = self._to_sound(shield_ok * self._adsr(t, 0.006, 0.085) * 0.55)
+
         # Game Over
         t = self._time_axis(0.85)
         doom = np.zeros_like(t)

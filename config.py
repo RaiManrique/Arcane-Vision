@@ -63,9 +63,13 @@ COLOR_HP_LOW: Final[tuple[int, int, int]] = (255, 76, 94)
 
 COLOR_SHIELD_PRIMARY: Final[tuple[int, int, int]] = (88, 238, 255)
 COLOR_SHIELD_GLOW: Final[tuple[int, int, int]] = (205, 252, 255)
+COLOR_SHIELD_OVERHEAT: Final[tuple[int, int, int]] = (255, 86, 68)
 
 COLOR_OVERCHARGE_CORE: Final[tuple[int, int, int]] = (255, 250, 220)
 COLOR_OVERCHARGE_AURA: Final[tuple[int, int, int]] = (255, 206, 78)
+COLOR_SPECIAL_SCATTER: Final[tuple[int, int, int]] = (82, 245, 218)
+COLOR_SPECIAL_HEAVY: Final[tuple[int, int, int]] = (255, 174, 62)
+COLOR_LOCK_ACTIVE: Final[tuple[int, int, int]] = (255, 212, 84)
 
 COLOR_ENEMY_ORB: Final[tuple[int, int, int]] = (255, 68, 86)
 COLOR_ENEMY_ORB_CORE: Final[tuple[int, int, int]] = (255, 218, 170)
@@ -201,16 +205,50 @@ MOUTH_MAR_REFERENCE: Final[float] = 0.68
 MOUTH_OPEN_THRESHOLD: Final[float] = 0.32
 MOUTH_CLOSE_THRESHOLD: Final[float] = 0.21
 
-# Carga y liberación de proyectil sobrecargado
-CHARGE_FILL_RATE: Final[float] = 0.88       # Carga completa en ~1.14 s
-CHARGE_DECAY_RATE: Final[float] = 1.80      # Decae si se cierra antes del umbral
-OVERCHARGE_MIN_CHARGE: Final[float] = 0.40  # Mínimo para disparar proyectil gigante
+# Carga y liberación de proyectil especial bucal (requiere barra especial al 100%)
+CHARGE_FILL_RATE: Final[float] = 1.05       # Carga bucal completa en ~0.95 s cuando la barra está lista
+CHARGE_DECAY_RATE: Final[float] = 1.85      # Decae si se cierra antes del umbral
+OVERCHARGE_MIN_CHARGE: Final[float] = 0.38  # Mínimo de canalización bucal para liberar el especial
 
-# Escudo deflector angular (mano secundaria)
+# Barra de energía del tiro especial (0..100, evita spam)
+SPECIAL_ENERGY_MAX: Final[float] = 100.0
+SPECIAL_ENERGY_PASSIVE_REGEN: Final[float] = 2.4   # Recarga pasiva lenta por segundo
+SPECIAL_ENERGY_PER_HIT: Final[float] = 2.6         # Al impactar enemigos
+SPECIAL_ENERGY_PER_KILL: Final[float] = 9.0        # Al derrotar enemigos
+SPECIAL_ENERGY_PER_SHIELD_BREAK: Final[float] = 10.0
+SPECIAL_ENERGY_PER_REFLECT: Final[float] = 16.0    # Recompensa alta por reflejar con escudo
+
+# Dos tipos de tiro especial bucal:
+# 1) "scatter": Nova Dispersa (para enemigos pequeños y dispersos)
+SPECIAL_SCATTER_COUNT: Final[int] = 9
+SPECIAL_SCATTER_SPREAD_DEG: Final[float] = 112.0
+SPECIAL_SCATTER_SPEED: Final[float] = 690.0
+SPECIAL_SCATTER_DAMAGE: Final[float] = 58.0
+SPECIAL_SCATTER_RADIUS: Final[float] = 13.0
+SPECIAL_SCATTER_TURN_RATE: Final[float] = 4.6      # Radianes/s de seguimiento suave
+
+# 2) "heavy": Lanza Titánica (para enemigos grandes / Centinelas / Jefe)
+SPECIAL_HEAVY_SPEED: Final[float] = 610.0
+SPECIAL_HEAVY_DAMAGE: Final[float] = 260.0
+SPECIAL_HEAVY_RADIUS: Final[float] = 44.0
+
+# Bloqueo de tipo de ataque haciendo puño (0 dedos) en la mano dominante
+FIST_DEBOUNCE_FRAMES: Final[int] = 5        # Frames estables de puño para alternar candado
+FIST_TOGGLE_COOLDOWN: Final[float] = 0.55   # Segundos mínimos entre alternancias de candado
+LOCKED_FIRE_MIN_FINGERS: Final[int] = 4     # Con ataque bloqueado, 4-5 dedos disparan sin cambiar hechizo
+
+# Escudo deflector angular (mano secundaria): barra temporal, regeneración lenta y cooldown
 SHIELD_OPEN_FINGERS_ON: Final[int] = 5      # Activa con palma abierta completa
 SHIELD_OPEN_FINGERS_HOLD: Final[int] = 4    # Histéresis suave para evitar parpadeo
 SHIELD_HALF_LENGTH: Final[float] = 88.0
 SHIELD_THICKNESS: Final[float] = 15.0
+SHIELD_ENERGY_MAX: Final[float] = 100.0
+SHIELD_MAX_ACTIVE_SECONDS: Final[float] = 4.0       # ~4 s de uso continuo antes de agotarse
+SHIELD_DRAIN_PER_SEC: Final[float] = SHIELD_ENERGY_MAX / SHIELD_MAX_ACTIVE_SECONDS
+SHIELD_REGEN_DELAY: Final[float] = 0.45             # Breve pausa al bajar el escudo antes de recuperar
+SHIELD_REGEN_PER_SEC: Final[float] = 11.5           # Recuperación lenta (~8.7 s para llenarse)
+SHIELD_OVERHEAT_COOLDOWN: Final[float] = 4.5        # Tiempo de enfriamiento obligatorio si se agota toda la barra
+SHIELD_POST_COOLDOWN_ENERGY: Final[float] = 35.0    # Energía disponible al terminar el enfriamiento
 
 # Inclinación de cabeza (roll entre ambos ojos) para esquive lateral
 HEAD_ROLL_DEADZONE_DEG: Final[float] = 4.0

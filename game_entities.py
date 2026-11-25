@@ -109,6 +109,38 @@ def draw_runic_circle(
     surface.blit(tmp, (int(center[0] - pad), int(center[1] - pad)))
 
 
+def draw_padlock_icon(
+    surface: pygame.Surface,
+    center: tuple[float, float],
+    locked: bool,
+    color: tuple[int, int, int],
+    scale: float = 1.0,
+) -> None:
+    """Dibuja un ícono vectorial nítido de candado (cerrado o abierto)."""
+    cx, cy = int(center[0]), int(center[1])
+    bw = max(8, int(14 * scale))
+    bh = max(7, int(11 * scale))
+    shackle_r = max(4, int(5 * scale))
+
+    # Arco superior del candado
+    arc_rect = pygame.Rect(cx - shackle_r, cy - bh // 2 - shackle_r - 1, shackle_r * 2, shackle_r * 2 + 2)
+    if locked:
+        pygame.draw.arc(surface, color, arc_rect, 0.0, math.pi, max(2, int(2 * scale)))
+        pygame.draw.line(surface, color, (arc_rect.left, cy - bh // 2 + 1), (arc_rect.left, arc_rect.centery), max(2, int(2 * scale)))
+        pygame.draw.line(surface, color, (arc_rect.right - 1, cy - bh // 2 + 1), (arc_rect.right - 1, arc_rect.centery), max(2, int(2 * scale)))
+    else:
+        open_rect = arc_rect.move(int(3 * scale), -int(2 * scale))
+        pygame.draw.arc(surface, color, open_rect, 0.0, math.pi, max(2, int(2 * scale)))
+        pygame.draw.line(surface, color, (open_rect.right - 1, cy - bh // 2 + 1), (open_rect.right - 1, open_rect.centery), max(2, int(2 * scale)))
+
+    # Cuerpo del candado
+    body_rect = pygame.Rect(cx - bw // 2, cy - bh // 2 + 2, bw, bh)
+    pygame.draw.rect(surface, color if locked else (48, 56, 86), body_rect, border_radius=3)
+    pygame.draw.rect(surface, color, body_rect, width=2, border_radius=3)
+    # Cerradura interior
+    pygame.draw.circle(surface, (10, 12, 24) if locked else color, (cx, body_rect.centery), max(2, int(2 * scale)))
+
+
 def segment_circle_collision(
     p1: tuple[float, float],
     p2: tuple[float, float],
@@ -446,7 +478,7 @@ class WizardAvatar:
 
 
 # ---------------------------------------------------------------------------
-# Escudo Deflector Angular (Mano Secundaria)
+# Escudo Deflector Angular (Mano Secundaria con barra temporal y enfriamiento)
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
 class AngularShield:
@@ -459,17 +491,93 @@ class AngularShield:
     flash_timer: float = 0.0
     anim_time: float = 0.0
 
+    # Barra de uso temporal, regeneración lenta y enfriamiento por agotamiento
+    energy: float = config.SHIELD_ENERGY_MAX
+    max_energy: float = config.SHIELD_ENERGY_MAX
+    overheated: bool = False
+    cooldown_timer: float = 0.0
+    regen_delay_timer: float = 0.0
+
+    def reset(self) -> None:
+        self.active = False
+        self.flash_timer = 0.0
+        self.energy = self.max_energy
+        self.overheated = False
+        self.cooldown_timer = 0.0
+        self.regen_delay_timer = 0.0
+
+    def restore_during_meditation(self, dt: float) -> None:
+        """Enfría y recarga el escudo cómodamente durante la Meditación Arcana."""
+        if self.overheated:
+            self.cooldown_timer = max(0.0, self.cooldown_timer - dt * 2.0)
+            if self.cooldown_timer <= 0.0:
+                self.overheated = False
+                self.energy = max(self.energy, config.SHIELD_POST_COOLDOWN_ENERGY)
+        else:
+            self.energy = min(self.max_energy, self.energy + config.SHIELD_REGEN_PER_SEC * 2.4 * dt)
+
+    @property
+    def energy_ratio(self) -> float:
+        return max(0.0, min(1.0, self.energy / max(self.max_energy, 1.0)))
+
+    @property
+    def cooldown_ratio(self) -> float:
+        return max(0.0, min(1.0, self.cooldown_timer / max(config.SHIELD_OVERHEAT_COOLDOWN, 1e-4)))
+
     def endpoints(self) -> tuple[tuple[float, float], tuple[float, float]]:
         dx = math.cos(self.angle) * self.half_length
         dy = math.sin(self.angle) * self.half_length
         return ((self.x - dx, self.y - dy), (self.x + dx, self.y + dy))
 
-    def update(self, active: bool, pos: tuple[float, float], angle: float, dt: float) -> None:
-        self.active = active
+    def update(
+        self,
+        want_active: bool,
+        pos: tuple[float, float],
+        angle: float,
+        dt: float,
+        allow_drain: bool = True,
+    ) -> str | None:
+        """Actualiza escudo, energía por tiempo, regeneración lenta y cooldown.
+
+        Retorna 'overheated' si se agotó toda la barra, 'cooled_down' al terminar
+        el enfriamiento, o None.
+        """
         self.x, self.y = pos
         self.angle = angle
         self.anim_time += dt
         self.flash_timer = max(0.0, self.flash_timer - dt)
+
+        # Estado de enfriamiento obligatorio (cooldown) tras agotar la barra
+        if self.overheated:
+            self.active = False
+            self.cooldown_timer = max(0.0, self.cooldown_timer - dt)
+            if self.cooldown_timer <= 0.0:
+                self.overheated = False
+                self.energy = config.SHIELD_POST_COOLDOWN_ENERGY
+                self.regen_delay_timer = 0.0
+                return "cooled_down"
+            return None
+
+        # Escudo levantado: consume barra proporcionalmente al tiempo
+        if want_active and self.energy > 0.0:
+            self.active = True
+            self.regen_delay_timer = config.SHIELD_REGEN_DELAY
+            if allow_drain:
+                self.energy = max(0.0, self.energy - config.SHIELD_DRAIN_PER_SEC * dt)
+                if self.energy <= 0.0:
+                    self.active = False
+                    self.overheated = True
+                    self.cooldown_timer = config.SHIELD_OVERHEAT_COOLDOWN
+                    return "overheated"
+            return None
+
+        # Escudo en reposo: se restablece lentamente conforme no se usa
+        self.active = False
+        if self.regen_delay_timer > 0.0:
+            self.regen_delay_timer = max(0.0, self.regen_delay_timer - dt)
+        else:
+            self.energy = min(self.max_energy, self.energy + config.SHIELD_REGEN_PER_SEC * dt)
+        return None
 
     def trigger_flash(self) -> None:
         self.flash_timer = 0.22
@@ -477,9 +585,17 @@ class AngularShield:
     def draw(self, surface: pygame.Surface) -> None:
         if not self.active:
             return
-        p1, p2 = self.endpoints()
-        col = config.COLOR_TEXT_GOLD if self.flash_timer > 0.0 else config.COLOR_SHIELD_PRIMARY
-        core = config.COLOR_OVERCHARGE_CORE if self.flash_timer > 0.0 else config.COLOR_SHIELD_GLOW
+
+        low_energy = self.energy_ratio < 0.28
+        if self.flash_timer > 0.0:
+            col = config.COLOR_TEXT_GOLD
+            core = config.COLOR_OVERCHARGE_CORE
+        elif low_energy and int(self.anim_time * 16) % 2 == 0:
+            col = config.COLOR_SHIELD_OVERHEAT
+            core = config.COLOR_HP_MID
+        else:
+            col = config.COLOR_SHIELD_PRIMARY
+            core = config.COLOR_SHIELD_GLOW
 
         # Halo energético semitransparente
         pad = int(self.half_length + 34)
@@ -494,7 +610,7 @@ class AngularShield:
         pygame.draw.line(tmp, (*col, 155), lp1, lp2, int(self.thickness * 1.15))
         pygame.draw.line(tmp, (*core, 245), lp1, lp2, 5)
 
-        # Nodos rúnicos en los extremos y centro
+        # Nodos rúnicos en los extremos
         for pt in (lp1, lp2):
             pygame.draw.circle(tmp, (*col, 220), (int(pt[0]), int(pt[1])), 8)
             pygame.draw.circle(tmp, (*core, 255), (int(pt[0]), int(pt[1])), 4)
@@ -508,6 +624,13 @@ class AngularShield:
         pygame.draw.circle(tmp, (*core, 210), (int(tip[0]), int(tip[1])), 3)
 
         surface.blit(tmp, (int(self.x - pad), int(self.y - pad)))
+
+        # Mini barra de durabilidad justo bajo el escudo para lectura periférica
+        bw, bh = 86, 6
+        bx, by = int(self.x - bw // 2), int(self.y + 18)
+        pygame.draw.rect(surface, (16, 20, 36), (bx, by, bw, bh), border_radius=3)
+        bar_col = config.COLOR_SHIELD_OVERHEAT if low_energy else config.COLOR_SHIELD_PRIMARY
+        pygame.draw.rect(surface, bar_col, (bx, by, int(bw * self.energy_ratio), bh), border_radius=3)
 
 
 # ---------------------------------------------------------------------------
@@ -526,43 +649,111 @@ class PlayerProjectile:
     core_color: tuple[int, int, int]
     overcharged: bool = False
     is_crit: bool = False
+    special_kind: str = ""          # "" normal | "scatter" Nova Dispersa | "heavy" Lanza Titánica
+    piercing: bool = False
+    homing_turn_rate: float = 0.0
+    target_enemy_id: int | None = None
     anim_time: float = 0.0
     hit_enemy_ids: set[int] = field(default_factory=set)
 
-    def update(self, dt: float, particles: ParticleSystem) -> bool:
+    def _steer_towards_target(self, dt: float, enemies: list[Enemy]) -> None:
+        if self.homing_turn_rate <= 0.0 or not enemies:
+            return
+        target = None
+        if self.target_enemy_id is not None:
+            for e in enemies:
+                if e.alive and e.entity_id == self.target_enemy_id and e.entity_id not in self.hit_enemy_ids:
+                    target = e
+                    break
+        if target is None:
+            best_d = 680.0
+            for e in enemies:
+                if not e.alive or e.entity_id in self.hit_enemy_ids:
+                    continue
+                d = math.hypot(e.x - self.x, e.y - self.y)
+                if d < best_d:
+                    best_d = d
+                    target = e
+            self.target_enemy_id = target.entity_id if target is not None else None
+
+        if target is None:
+            return
+        speed = max(math.hypot(self.vx, self.vy), 1e-4)
+        cur_ang = math.atan2(self.vy, self.vx)
+        des_ang = math.atan2(target.y - self.y, target.x - self.x)
+        diff = (des_ang - cur_ang + math.pi) % math.tau - math.pi
+        max_step = self.homing_turn_rate * dt
+        new_ang = cur_ang + max(-max_step, min(max_step, diff))
+        self.vx = math.cos(new_ang) * speed
+        self.vy = math.sin(new_ang) * speed
+
+    def update(self, dt: float, particles: ParticleSystem, enemies: list[Enemy] | None = None) -> bool:
         self.anim_time += dt
+        if self.homing_turn_rate > 0.0 and enemies:
+            self._steer_towards_target(dt, enemies)
         self.x += self.vx * dt
         self.y += self.vy * dt
-        if self.overcharged:
-            particles.emit_trail(self.x, self.y, config.COLOR_OVERCHARGE_AURA, radius=8.0, life=0.28)
-            if random.random() < 0.7:
-                particles.emit_trail(self.x, self.y, self.color, radius=6.0, life=0.22)
+
+        if self.special_kind == "heavy" or (self.overcharged and self.special_kind != "scatter"):
+            particles.emit_trail(self.x, self.y, config.COLOR_SPECIAL_HEAVY, radius=9.0, life=0.30)
+            if random.random() < 0.75:
+                particles.emit_trail(self.x, self.y, self.color, radius=6.5, life=0.22)
+        elif self.special_kind == "scatter":
+            particles.emit_trail(self.x, self.y, config.COLOR_SPECIAL_SCATTER, radius=5.0, life=0.22)
+            if random.random() < 0.45:
+                particles.emit_trail(self.x, self.y, config.COLOR_OVERCHARGE_CORE, radius=3.0, life=0.16)
         elif random.random() < 0.45:
             particles.emit_trail(self.x, self.y, self.color, radius=max(2.5, self.radius * 0.36), life=0.16)
 
-        margin = self.radius + 60
+        margin = self.radius + 70
         return (
             -margin <= self.x <= config.SCREEN_WIDTH + margin
             and -margin <= self.y <= config.SCREEN_HEIGHT + margin
         )
 
     def draw(self, surface: pygame.Surface) -> None:
-        if self.overcharged:
+        if self.special_kind == "scatter":
+            # Nova Dispersa: cometa estelar buscador para enemigos pequeños dispersos
+            ang = math.atan2(self.vy, self.vx)
+            tail = (self.x - math.cos(ang) * 24, self.y - math.sin(ang) * 24)
+            pygame.draw.line(surface, config.COLOR_SPECIAL_SCATTER, tail, (self.x, self.y), 6)
+            pygame.draw.line(surface, config.COLOR_OVERCHARGE_CORE, tail, (self.x, self.y), 2)
+            draw_glow_circle(surface, config.COLOR_SPECIAL_SCATTER, (self.x, self.y), self.radius * 0.9, config.COLOR_OVERCHARGE_CORE, 2)
+            # Destello en cruz de 4 puntas rotando
+            r_star = self.radius * 1.45
+            for i in range(4):
+                a = self.anim_time * 9.0 + i * (math.pi * 0.5)
+                pt = (self.x + math.cos(a) * r_star, self.y + math.sin(a) * r_star)
+                pygame.draw.line(surface, config.COLOR_OVERCHARGE_CORE, (self.x, self.y), pt, 2)
+            return
+
+        if self.overcharged or self.special_kind == "heavy":
+            # Lanza Titánica: singularidad perforante masiva para enemigos grandes / jefe
             draw_runic_circle(
                 surface,
                 (self.x, self.y),
-                self.radius * 1.18,
-                config.COLOR_OVERCHARGE_AURA,
-                self.anim_time * 7.5,
+                self.radius * 1.28,
+                config.COLOR_SPECIAL_HEAVY,
+                self.anim_time * 8.0,
                 charge=1.0,
                 sides=6,
-                alpha=235,
+                alpha=240,
+            )
+            draw_runic_circle(
+                surface,
+                (self.x, self.y),
+                self.radius * 0.92,
+                self.color,
+                -self.anim_time * 10.5,
+                charge=0.8,
+                sides=4,
+                alpha=225,
             )
             draw_glow_circle(
                 surface,
-                self.color,
+                config.COLOR_SPECIAL_HEAVY,
                 (self.x, self.y),
-                self.radius * 0.78,
+                self.radius * 0.72,
                 config.COLOR_OVERCHARGE_CORE,
                 glow_layers=3,
             )
