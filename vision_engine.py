@@ -124,11 +124,14 @@ class VisionState:
     camera_available: bool = False
     camera_status: str = "Abriendo cámara..."
 
-    # Mano dominante (hechizos y ataque)
+    # Mano dominante (hechizos, bloqueo por puño y ataque)
     dominant_present: bool = False
     dominant_pos: tuple[float, float] = (config.SCREEN_WIDTH * 0.65, config.SCREEN_HEIGHT * 0.60)
     dominant_fingers: int = 0
+    dominant_fist: bool = False
     selected_spell: int = 1
+    spell_locked: bool = False
+    lock_toggled_event: bool = False
     rapid_fire_active: bool = False
 
     # Mano secundaria (escudo deflector angular)
@@ -228,6 +231,10 @@ class VisionEngine:
         self._spell_debouncer = Debouncer(1, config.SPELL_DEBOUNCE_FRAMES)
         self._fire_debouncer = Debouncer(False, config.FIRE_PALM_DEBOUNCE_FRAMES)
         self._shield_debouncer = Debouncer(False, config.SHIELD_DEBOUNCE_FRAMES)
+        self._fist_debouncer = Debouncer(False, config.FIST_DEBOUNCE_FRAMES)
+        self._prev_fist_confirmed: bool = False
+        self._last_lock_toggle_ms: int = -10_000
+        self.spell_locked: bool = False
 
     def start(self, progress_callback=None) -> None:
         """Descarga modelos si faltan, crea detectores en modo VIDEO y abre webcam."""
@@ -281,10 +288,29 @@ class VisionEngine:
         self._shield_angle_ema.reset()
         self._fire_debouncer.reset(False)
         self._shield_debouncer.reset(False)
+        self._fist_debouncer.reset(False)
+        self._prev_fist_confirmed = False
         return self.left_handed
+
+    def toggle_spell_lock(self) -> bool:
+        """Alterna manualmente el bloqueo del hechizo activo."""
+        self.spell_locked = not self.spell_locked
+        self.state.spell_locked = self.spell_locked
+        self._spell_debouncer.reset(self.state.selected_spell)
+        self._last_lock_toggle_ms = monotonic_ns() // 1_000_000
+        return self.spell_locked
+
+    def reset_spell_lock(self) -> None:
+        """Restablece el candado a desbloqueado (ej. al iniciar nueva partida)."""
+        self.spell_locked = False
+        self.state.spell_locked = False
+        self.state.lock_toggled_event = False
+        self._fist_debouncer.reset(False)
+        self._prev_fist_confirmed = False
 
     def update(self) -> VisionState:
         """Procesa el último fotograma disponible y devuelve el VisionState filtrado."""
+        self.state.lock_toggled_event = False
         if not self._running or self._stream is None:
             return self.state
 
@@ -307,20 +333,20 @@ class VisionEngine:
         aspect = w / max(h, 1)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
-        if self._hand_landmarker is not None:
-            hand_result = self._hand_landmarker.detect_for_video(mp_image, timestamp_ms)
-            self._process_hands(hand_result, aspect)
-
         if self._face_landmarker is not None:
             face_result = self._face_landmarker.detect_for_video(mp_image, timestamp_ms)
             self._process_face(face_result, aspect)
+
+        if self._hand_landmarker is not None:
+            hand_result = self._hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+            self._process_hands(hand_result, aspect, timestamp_ms)
 
         return self.state
 
     # ------------------------------------------------------------------
     # Procesamiento de manos
     # ------------------------------------------------------------------
-    def _process_hands(self, hand_result, aspect: float) -> None:
+    def _process_hands(self, hand_result, aspect: float, timestamp_ms: int) -> None:
         landmarks_list = getattr(hand_result, "hand_landmarks", None) or []
         handedness_list = getattr(hand_result, "handedness", None) or []
 
@@ -328,6 +354,8 @@ class VisionEngine:
             self.state.dominant_present = False
             self.state.shield_present = False
             self.state.dominant_fingers = 0
+            self.state.dominant_fist = self._fist_debouncer.update(False)
+            self._prev_fist_confirmed = self.state.dominant_fist
             self.state.shield_fingers = 0
             self.state.rapid_fire_active = self._fire_debouncer.update(False)
             self.state.shield_active = self._shield_debouncer.update(False)
@@ -363,7 +391,7 @@ class VisionEngine:
             elif label == secondary_label and sec_lms is None:
                 sec_lms = lms
 
-        # --- Mano Dominante (selección de hechizo 1..4 y disparo rápido 5) ---
+        # --- Mano Dominante (puño = bloqueo, 1..4 = hechizo si libre, palma = disparo) ---
         if dom_lms is not None:
             self.state.dominant_present = True
             raw_pos = self._palm_screen_pos(dom_lms)
@@ -373,16 +401,41 @@ class VisionEngine:
             fingers = self._count_extended_fingers(dom_lms, aspect)
             self.state.dominant_fingers = fingers
 
-            if 1 <= fingers <= 4:
-                self.state.selected_spell = self._spell_debouncer.update(fingers)
-                self.state.rapid_fire_active = self._fire_debouncer.update(False)
-            elif fingers == 5:
-                self.state.rapid_fire_active = self._fire_debouncer.update(True)
+            # Detección estable de puño (0 dedos) para alternar bloqueo del tipo de ataque
+            fist_confirmed = self._fist_debouncer.update(fingers == 0)
+            self.state.dominant_fist = fist_confirmed
+            cooldown_ms = int(config.FIST_TOGGLE_COOLDOWN * 1000)
+            if (
+                fist_confirmed
+                and not self._prev_fist_confirmed
+                and not self.state.mouth_open
+                and (timestamp_ms - self._last_lock_toggle_ms) >= cooldown_ms
+            ):
+                self.spell_locked = not self.spell_locked
+                self.state.spell_locked = self.spell_locked
+                self.state.lock_toggled_event = True
+                self._last_lock_toggle_ms = timestamp_ms
+                self._spell_debouncer.reset(self.state.selected_spell)
+            self._prev_fist_confirmed = fist_confirmed
+
+            if self.spell_locked:
+                # Con ataque bloqueado: ignorar cambios de hechizo y disparar con mano abierta (4-5 dedos)
+                self.state.rapid_fire_active = self._fire_debouncer.update(
+                    fingers >= config.LOCKED_FIRE_MIN_FINGERS
+                )
             else:
-                self.state.rapid_fire_active = self._fire_debouncer.update(False)
+                if 1 <= fingers <= 4:
+                    self.state.selected_spell = self._spell_debouncer.update(fingers)
+                    self.state.rapid_fire_active = self._fire_debouncer.update(False)
+                elif fingers == 5:
+                    self.state.rapid_fire_active = self._fire_debouncer.update(True)
+                else:
+                    self.state.rapid_fire_active = self._fire_debouncer.update(False)
         else:
             self.state.dominant_present = False
             self.state.dominant_fingers = 0
+            self.state.dominant_fist = self._fist_debouncer.update(False)
+            self._prev_fist_confirmed = self.state.dominant_fist
             self.state.rapid_fire_active = self._fire_debouncer.update(False)
 
         # --- Mano Secundaria (escudo deflector angular) ---
