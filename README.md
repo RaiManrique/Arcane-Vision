@@ -73,6 +73,17 @@ Cada oleada dura **35 segundos** y se intercala automáticamente con una pausa d
 
 El proyecto está preparado para **Python 3.14** y las versiones más recientes de MediaPipe Tasks, OpenCV, Pygame-CE y NumPy. Los modelos oficiales `hand_landmarker.task` y `face_landmarker.task` se guardan en `models/` y se descargan automáticamente si faltan.
 
+### Inicio Rápido en Windows (Doble clic con `Jugar.bat`, sin instalar Python manualmente)
+
+Si vas a compartir el juego o no tienes Python instalado en Windows:
+
+1. Descarga y **descomprime** toda la carpeta del proyecto (no lo abras desde dentro del `.zip`).
+2. Haz **doble clic en `Jugar.bat`**.
+3. **Primera vez (con internet):** `Jugar.bat` descarga automáticamente el gestor portable `uv`, crea un entorno virtual aislado `.venv` con **Python 3.14**, instala las dependencias de `requirements.txt` y abre el juego solo (tarda ~1–2 minutos).
+4. **Siguientes veces:** Al hacer doble clic en `Jugar.bat`, detecta que `.venv` ya está listo y abre el juego en segundos sin volver a descargar nada (incluso sin conexión).
+
+*(Nota: si Windows muestra la pantalla de protección SmartScreen la primera vez, pulsa «Más información» y «Ejecutar de todas formas».)*
+
 ### Linux / macOS (con `uv` — recomendado)
 
 ```bash
