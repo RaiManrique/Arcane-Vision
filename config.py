@@ -43,6 +43,20 @@ WINDOW_TITLE: Final[str] = "Arcane Vision: Duelo de Magos"
 # Opacidad del video de cámara en el fondo (0..255)
 CAMERA_BG_ALPHA: Final[int] = 68
 
+# Zona de juego recortada dentro del lienzo 1280x720 (la detección de cámara usa el 100%)
+ARENA_LEFT: Final[int] = 190
+ARENA_RIGHT: Final[int] = SCREEN_WIDTH - 190      # 1090 (ancho jugable: 900 px)
+ARENA_TOP: Final[int] = 90
+ARENA_BOTTOM: Final[int] = SCREEN_HEIGHT - 52     # 668
+ARENA_WIDTH: Final[int] = ARENA_RIGHT - ARENA_LEFT
+
+# Sub-región cómoda de la cámara que se mapea hasta los bordes exactos de la arena
+# (MediaPipe sigue detectando fuera de este rango en 0.0..1.0 sin recorte)
+HAND_MAP_X_MIN: Final[float] = 0.17
+HAND_MAP_X_MAX: Final[float] = 0.83
+HAND_MAP_Y_MIN: Final[float] = 0.15
+HAND_MAP_Y_MAX: Final[float] = 0.86
+
 # ---------------------------------------------------------------------------
 # Paleta cromática arcana (RGB)
 # ---------------------------------------------------------------------------
@@ -236,6 +250,14 @@ SPECIAL_HEAVY_RADIUS: Final[float] = 44.0
 FIST_DEBOUNCE_FRAMES: Final[int] = 5        # Frames estables de puño para alternar candado
 FIST_TOGGLE_COOLDOWN: Final[float] = 0.55   # Segundos mínimos entre alternancias de candado
 LOCKED_FIRE_MIN_FINGERS: Final[int] = 4     # Con ataque bloqueado, 4-5 dedos disparan sin cambiar hechizo
+
+# Gesto de oración (juntar ambas manos) para intercambiar mano de ataque y escudo
+PRAYER_PALM_DIST_RATIO: Final[float] = 1.15   # Distancia máxima entre centros de palmas (en unidades de palma)
+PRAYER_WRIST_DIST_RATIO: Final[float] = 1.30  # Distancia máxima entre muñecas
+PRAYER_TIP_DIST_RATIO: Final[float] = 1.10    # Distancia máxima entre puntas de dedos (índice o medio)
+PRAYER_MIN_ALIGNMENT: Final[float] = 0.25     # Ambas manos orientadas en dirección similar
+PRAYER_DEBOUNCE_FRAMES: Final[int] = 8        # Frames estables juntos para confirmar el intercambio
+PRAYER_SWAP_COOLDOWN: Final[float] = 1.35     # Enfriamiento mínimo entre intercambios de mano
 
 # Escudo deflector angular (mano secundaria): barra temporal, regeneración lenta y cooldown
 SHIELD_OPEN_FINGERS_ON: Final[int] = 5      # Activa con palma abierta completa
