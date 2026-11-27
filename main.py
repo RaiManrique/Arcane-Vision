@@ -176,8 +176,8 @@ class ArcaneVisionGame:
         # Botones interactivos del HUD en coordenadas del lienzo 1280x720
         self.fullscreen_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 224, 14, 208, 36)
         self.start_btn_rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 170, 588, 340, 54)
-        self.special_mode_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 134, config.SCREEN_HEIGHT - 87, 108, 24)
-        self.lock_badge_rect = pygame.Rect(512, config.SCREEN_HEIGHT - 74, 132, 58)
+        self.special_mode_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 122, 89, 96, 22)
+        self.lock_badge_rect = pygame.Rect(16, 420, 132, 58)
 
         # Estado del juego
         self.running = True
@@ -1434,11 +1434,11 @@ class ArcaneVisionGame:
         status_surf = self.font_small.render(f"● {cam_text}  |  {audio_text}", True, cam_col)
         surface.blit(status_surf, (config.SCREEN_WIDTH - status_surf.get_width() - 18, 56))
 
-        # 4. Panel inferior izquierdo: Grimorio de 4 hechizos + Candado de bloqueo (puño / [L])
-        dock_x, dock_y = 16, config.SCREEN_HEIGHT - 74
+        # 4. Panel lateral izquierdo: Grimorio de 4 hechizos + Candado de bloqueo (puño / [L])
+        dock_x, dock_y = 16, 156
         for idx in range(1, 5):
             spec = config.SPELLS[idx]
-            rect = pygame.Rect(dock_x + (idx - 1) * 122, dock_y, 114, 58)
+            rect = pygame.Rect(dock_x, dock_y + (idx - 1) * 66, 132, 58)
             active = idx == self.selected_spell
             border = config.COLOR_LOCK_ACTIVE if (active and vs.spell_locked) else (spec.color if active else (54, 66, 102))
             self._draw_panel(surface, rect, border_color=border)
@@ -1462,8 +1462,8 @@ class ArcaneVisionGame:
         surface.blit(l_title, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 11))
         surface.blit(l_hint, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 32))
 
-        # 5. Panel inferior derecho: Barra de Energía Especial (0..100%) + 2 Tipos de Especial
-        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 398, config.SCREEN_HEIGHT - 92, 382, 76)
+        # 5. Panel superior derecho (bajo estado): Barra de Energía Especial (0..100%) + 2 Tipos de Especial
+        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 336, 84, 320, 68)
         special_ready = self.special_energy >= config.SPECIAL_ENERGY_MAX
         active_sp_col = (
             config.COLOR_SPECIAL_SCATTER
@@ -1479,7 +1479,7 @@ class ArcaneVisionGame:
         else:
             header_txt = f"Barra Especial: {energy_pct}%"
             header_col = config.COLOR_TEXT_MAIN
-        surface.blit(self.font_small.render(header_txt, True, header_col), (gauge_panel.x + 12, gauge_panel.y + 9))
+        surface.blit(self.font_small.render(header_txt, True, header_col), (gauge_panel.x + 10, gauge_panel.y + 8))
 
         # Botón selector de tipo especial [E]
         mode_labels = {"auto": "[E] Auto", "scatter": "[E] Nova", "heavy": "[E] Lanza"}
@@ -1489,7 +1489,7 @@ class ArcaneVisionGame:
         surface.blit(m_surf, m_surf.get_rect(center=self.special_mode_btn_rect.center))
 
         # Barra principal de llenado (0..100%) + superposición de canalización bucal
-        meter = pygame.Rect(gauge_panel.x + 12, gauge_panel.y + 34, gauge_panel.w - 24, 15)
+        meter = pygame.Rect(gauge_panel.x + 10, gauge_panel.y + 31, gauge_panel.w - 20, 13)
         pygame.draw.rect(surface, (20, 24, 42), meter, border_radius=5)
         energy_ratio = max(0.0, min(1.0, self.special_energy / config.SPECIAL_ENERGY_MAX))
         fill_col = active_sp_col if special_ready else (112, 138, 210)
@@ -1508,10 +1508,10 @@ class ArcaneVisionGame:
         # Leyenda de los 2 tipos de tiro especial
         nova_col = config.COLOR_SPECIAL_SCATTER if self.active_special_preview == "scatter" else config.COLOR_TEXT_MUTED
         heavy_col = config.COLOR_SPECIAL_HEAVY if self.active_special_preview == "heavy" else config.COLOR_TEXT_MUTED
-        nova_surf = self.font_small.render("3-5d: Nova (Dispersos)", True, nova_col)
-        heavy_surf = self.font_small.render("1-2d: Lanza (Grandes)", True, heavy_col)
-        surface.blit(nova_surf, (gauge_panel.x + 12, gauge_panel.y + 54))
-        surface.blit(heavy_surf, (gauge_panel.right - heavy_surf.get_width() - 12, gauge_panel.y + 54))
+        nova_surf = self.font_small.render("3-5d: Nova", True, nova_col)
+        heavy_surf = self.font_small.render("1-2d: Lanza", True, heavy_col)
+        surface.blit(nova_surf, (gauge_panel.x + 10, gauge_panel.y + 48))
+        surface.blit(heavy_surf, (gauge_panel.right - heavy_surf.get_width() - 10, gauge_panel.y + 48))
 
     def _draw_title_overlay(self, surface: pygame.Surface, vs: VisionState) -> None:
         dim = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
