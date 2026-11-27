@@ -150,8 +150,11 @@ class VisionState:
     head_roll_deg: float = 0.0
     head_move: float = 0.0
 
-    # Configuración de lateralidad
+    # Configuración de lateralidad y gesto de oración (juntar manos)
     left_handed: bool = False
+    prayer_progress: float = 0.0
+    prayer_pos: tuple[float, float] = (config.SCREEN_WIDTH * 0.5, config.SCREEN_HEIGHT * 0.55)
+    handedness_swapped_event: bool = False
 
 
 class _WebcamStream:
@@ -236,6 +239,11 @@ class VisionEngine:
         self._last_lock_toggle_ms: int = -10_000
         self.spell_locked: bool = False
 
+        # Estado del gesto de oración (juntar manos para intercambiar roles)
+        self._prayer_streak: int = 0
+        self._prayer_latched: bool = False
+        self._last_prayer_swap_ms: int = -10_000
+
     def start(self, progress_callback=None) -> None:
         """Descarga modelos si faltan, crea detectores en modo VIDEO y abre webcam."""
         hand_model, face_model = ensure_models(progress_callback=progress_callback)
@@ -311,6 +319,7 @@ class VisionEngine:
     def update(self) -> VisionState:
         """Procesa el último fotograma disponible y devuelve el VisionState filtrado."""
         self.state.lock_toggled_event = False
+        self.state.handedness_swapped_event = False
         if not self._running or self._stream is None:
             return self.state
 
@@ -359,6 +368,9 @@ class VisionEngine:
             self.state.shield_fingers = 0
             self.state.rapid_fire_active = self._fire_debouncer.update(False)
             self.state.shield_active = self._shield_debouncer.update(False)
+            self._prayer_streak = 0
+            self._prayer_latched = False
+            self.state.prayer_progress = 0.0
             return
 
         # Construimos lista de manos detectadas con etiqueta y coordenada X
@@ -371,6 +383,35 @@ class VisionEngine:
                     label = cat
             center_x = (lms[0].x + lms[5].x + lms[9].x + lms[17].x) * 0.25
             detected.append((label, center_x, lms))
+
+        # --- Detección de gesto de oración (juntar ambas manos para intercambiar roles) ---
+        prayer_active_now = False
+        if len(detected) >= 2:
+            is_prayer, mid_pos = self._detect_prayer_gesture(detected[0][2], detected[1][2], aspect)
+            if is_prayer:
+                prayer_active_now = True
+                self.state.prayer_pos = mid_pos
+                cooldown_ms = int(config.PRAYER_SWAP_COOLDOWN * 1000)
+                if not self._prayer_latched and (timestamp_ms - self._last_prayer_swap_ms) >= cooldown_ms:
+                    self._prayer_streak += 1
+                    self.state.prayer_progress = min(1.0, self._prayer_streak / max(config.PRAYER_DEBOUNCE_FRAMES, 1))
+                    if self._prayer_streak >= config.PRAYER_DEBOUNCE_FRAMES:
+                        self.toggle_handedness()
+                        self.state.handedness_swapped_event = True
+                        self._last_prayer_swap_ms = timestamp_ms
+                        self._prayer_latched = True
+                        self._prayer_streak = 0
+                        self.state.prayer_progress = 0.0
+                else:
+                    self.state.prayer_progress = 0.0
+            else:
+                self._prayer_streak = 0
+                self._prayer_latched = False
+                self.state.prayer_progress = 0.0
+        else:
+            self._prayer_streak = 0
+            self._prayer_latched = False
+            self.state.prayer_progress = 0.0
 
         # Si aparecen 2 manos con la misma etiqueta, desempatar por lado en espejo
         if len(detected) >= 2 and detected[0][0] == detected[1][0]:
@@ -390,6 +431,22 @@ class VisionEngine:
                 dom_lms = lms
             elif label == secondary_label and sec_lms is None:
                 sec_lms = lms
+
+        # Mientras las manos están juntas en oración, suprimimos disparos/bloqueos/escudo accidentales
+        if prayer_active_now:
+            if dom_lms is not None:
+                self.state.dominant_present = True
+                self._dom_pos_ema = self._ema_point(self._dom_pos_ema, self._palm_screen_pos(dom_lms), config.EMA_HAND_POS)
+                self.state.dominant_pos = self._dom_pos_ema
+            if sec_lms is not None:
+                self.state.shield_present = True
+                self._shield_pos_ema = self._ema_point(self._shield_pos_ema, self._palm_screen_pos(sec_lms), config.EMA_HAND_POS)
+                self.state.shield_pos = self._shield_pos_ema
+            self.state.rapid_fire_active = self._fire_debouncer.update(False)
+            self.state.shield_active = self._shield_debouncer.update(False)
+            self.state.dominant_fist = self._fist_debouncer.update(False)
+            self._prev_fist_confirmed = False
+            return
 
         # --- Mano Dominante (puño = bloqueo, 1..4 = hechizo si libre, palma = disparo) ---
         if dom_lms is not None:
@@ -468,12 +525,69 @@ class VisionEngine:
             self.state.shield_fingers = 0
             self.state.shield_active = self._shield_debouncer.update(False)
 
+    @classmethod
+    def _detect_prayer_gesture(
+        cls,
+        lms_a,
+        lms_b,
+        aspect: float,
+    ) -> tuple[bool, tuple[float, float]]:
+        """Detecta ambas manos juntas como en oración (invariante a distancia de cámara)."""
+        scale_a = cls._dist2d(lms_a[0], lms_a[9], aspect)
+        scale_b = cls._dist2d(lms_b[0], lms_b[9], aspect)
+        palm_scale = 0.5 * (scale_a + scale_b)
+        if palm_scale < 1e-4:
+            return False, (config.SCREEN_WIDTH * 0.5, config.SCREEN_HEIGHT * 0.5)
+
+        # Centros de palma en coordenadas normalizadas
+        ax = (lms_a[0].x + lms_a[5].x + lms_a[9].x + lms_a[17].x) * 0.25
+        ay = (lms_a[0].y + lms_a[5].y + lms_a[9].y + lms_a[17].y) * 0.25
+        bx = (lms_b[0].x + lms_b[5].x + lms_b[9].x + lms_b[17].x) * 0.25
+        by = (lms_b[0].y + lms_b[5].y + lms_b[9].y + lms_b[17].y) * 0.25
+
+        d_palms = math.hypot((ax - bx) * aspect, ay - by)
+        d_wrists = cls._dist2d(lms_a[0], lms_b[0], aspect)
+        d_tips = min(
+            cls._dist2d(lms_a[8], lms_b[8], aspect),
+            cls._dist2d(lms_a[12], lms_b[12], aspect),
+        )
+
+        # Alineación de ejes muñeca -> nudillo medio (ambas manos apuntando juntas)
+        va_x, va_y = (lms_a[9].x - lms_a[0].x) * aspect, (lms_a[9].y - lms_a[0].y)
+        vb_x, vb_y = (lms_b[9].x - lms_b[0].x) * aspect, (lms_b[9].y - lms_b[0].y)
+        na = max(math.hypot(va_x, va_y), 1e-5)
+        nb = max(math.hypot(vb_x, vb_y), 1e-5)
+        alignment = (va_x * vb_x + va_y * vb_y) / (na * nb)
+
+        is_prayer = (
+            d_palms <= palm_scale * config.PRAYER_PALM_DIST_RATIO
+            and d_wrists <= palm_scale * config.PRAYER_WRIST_DIST_RATIO
+            and d_tips <= palm_scale * config.PRAYER_TIP_DIST_RATIO
+            and alignment >= config.PRAYER_MIN_ALIGNMENT
+        )
+
+        pos_a = cls._palm_screen_pos(lms_a)
+        pos_b = cls._palm_screen_pos(lms_b)
+        mid = ((pos_a[0] + pos_b[0]) * 0.5, (pos_a[1] + pos_b[1]) * 0.5)
+        return is_prayer, mid
+
     @staticmethod
     def _palm_screen_pos(lms) -> tuple[float, float]:
+        """Mapea la zona cómoda de la cámara a los bordes exactos de la arena recortada.
+
+        La detección de MediaPipe sigue usando el 100 % del fotograma sin recortar,
+        de modo que las manos nunca se pierden al alcanzar los bordes del área jugable.
+        """
         nx = (lms[0].x + lms[5].x + lms[9].x + lms[17].x) * 0.25
         ny = (lms[0].y + lms[5].y + lms[9].y + lms[17].y) * 0.25
-        x = max(40.0, min(config.SCREEN_WIDTH - 40.0, nx * config.SCREEN_WIDTH))
-        y = max(40.0, min(config.SCREEN_HEIGHT - 40.0, ny * config.SCREEN_HEIGHT))
+
+        ux = (nx - config.HAND_MAP_X_MIN) / max(config.HAND_MAP_X_MAX - config.HAND_MAP_X_MIN, 1e-4)
+        uy = (ny - config.HAND_MAP_Y_MIN) / max(config.HAND_MAP_Y_MAX - config.HAND_MAP_Y_MIN, 1e-4)
+        ux = max(0.0, min(1.0, ux))
+        uy = max(0.0, min(1.0, uy))
+
+        x = config.ARENA_LEFT + ux * config.ARENA_WIDTH
+        y = config.ARENA_TOP + uy * (config.ARENA_BOTTOM - config.ARENA_TOP)
         return (x, y)
 
     @staticmethod

@@ -19,9 +19,10 @@ En la bóveda astral del *Observatorio de Aethel*, una fisura del Vacío amenaza
 | Abrir la **palma (`5 dedos`, o `4–5` si está bloqueado)** | Mano dominante | Disparo rápido | Lanza proyectiles básicos del hechizo activo con asistencia suave de puntería. |
 | **Abrir y cerrar la boca** (con Barra Especial al **100%**) | Rostro (`jawOpen` + MAR) + mano | Tiro Especial | Consume la Barra Especial y desata uno de los 2 ataques especiales según tu gesto (`3–5 dedos`: **Nova Dispersa** / `1–2 dedos`: **Lanza Titánica**). |
 | Abrir la **palma** y rotar la muñeca | Mano secundaria | Escudo Deflector Angular | Despliega la barrera inclinable para rebotar orbes rojos. Consume su barra por tiempo, recupera lento al descansar y entra en **enfriamiento (*cooldown*)** si se agota por completo. |
+| **Juntar ambas manos (gesto de oración)** | Ambas manos | Intercambiar manos | Intercambia dinámicamente qué mano lanza hechizos y cuál sostiene el escudo (repetible al separar y volver a juntar las manos, o con la tecla **`H`**). |
 | **Inclinar la cabeza** a izquierda o derecha | Rostro (*roll* entre ojos) | Esquive lateral | Desplaza el avatar del mago en la franja inferior para evadir rayos láser y proyectiles. |
 
-> **Soporte para zurdos:** Pulsa **`H`** en cualquier momento para intercambiar dinámicamente la mano de ataque y la mano del escudo.
+> **Zona de juego recortada con detección completa:** La arena jugable está enmarcada al centro (`x = 190..1090`), mientras que MediaPipe sigue rastreando el **100 % de tu cámara** con mapeo ampliado desde tu rango cómodo (`17 %..83 %`), permitiéndote alcanzar ambos bordes sin estirar los brazos fuera de cuadro.
 
 ---
 
@@ -71,6 +72,17 @@ Cada oleada dura **35 segundos** y se intercala automáticamente con una pausa d
 ## Instalación y Ejecución
 
 El proyecto está preparado para **Python 3.14** y las versiones más recientes de MediaPipe Tasks, OpenCV, Pygame-CE y NumPy. Los modelos oficiales `hand_landmarker.task` y `face_landmarker.task` se guardan en `models/` y se descargan automáticamente si faltan.
+
+### Inicio Rápido en Windows (Doble clic con `Jugar.bat`, sin instalar Python manualmente)
+
+Si vas a compartir el juego o no tienes Python instalado en Windows:
+
+1. Descarga y **descomprime** toda la carpeta del proyecto (no lo abras desde dentro del `.zip`).
+2. Haz **doble clic en `Jugar.bat`**.
+3. **Primera vez (con internet):** `Jugar.bat` descarga automáticamente el gestor portable `uv`, crea un entorno virtual aislado `.venv` con **Python 3.14**, instala las dependencias de `requirements.txt` y abre el juego solo (tarda ~1–2 minutos).
+4. **Siguientes veces:** Al hacer doble clic en `Jugar.bat`, detecta que `.venv` ya está listo y abre el juego en segundos sin volver a descargar nada (incluso sin conexión).
+
+*(Nota: si Windows muestra la pantalla de protección SmartScreen la primera vez, pulsa «Más información» y «Ejecutar de todas formas».)*
 
 ### Linux / macOS (con `uv` — recomendado)
 

@@ -176,8 +176,8 @@ class ArcaneVisionGame:
         # Botones interactivos del HUD en coordenadas del lienzo 1280x720
         self.fullscreen_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 224, 14, 208, 36)
         self.start_btn_rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 170, 588, 340, 54)
-        self.special_mode_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 134, config.SCREEN_HEIGHT - 87, 108, 24)
-        self.lock_badge_rect = pygame.Rect(512, config.SCREEN_HEIGHT - 74, 132, 58)
+        self.special_mode_btn_rect = pygame.Rect(config.SCREEN_WIDTH - 122, 89, 96, 22)
+        self.lock_badge_rect = pygame.Rect(16, 420, 132, 58)
 
         # Estado del juego
         self.running = True
@@ -342,6 +342,18 @@ class ArcaneVisionGame:
         else:
             self._show_toast("Ataque DESBLOQUEADO — muestra 1 a 4 dedos para cambiar hechizo", 2.2)
 
+    def _handle_hand_swap_feedback(self, is_left: bool, pos: tuple[float, float]) -> None:
+        self.audio.play("hand_swap", 0.92)
+        self._add_shake(4.0, 0.14)
+        self.particles.emit_ring(pos[0], pos[1], config.COLOR_TEXT_GOLD, max_radius=95.0, duration=0.38, width=5)
+        self.particles.emit_ring(pos[0], pos[1], config.COLOR_SHIELD_PRIMARY, max_radius=65.0, duration=0.30, width=4)
+        self.particles.emit_burst(pos[0], pos[1], config.COLOR_TEXT_GOLD, count=22, speed_range=(70, 240))
+        self.floating_texts.append(
+            FloatingText("¡MANOS INTERCAMBIADAS!", pos[0], pos[1] - 44.0, config.COLOR_TEXT_GOLD, life=1.1, max_life=1.1)
+        )
+        label = "Izq: HECHIZOS  |  Der: ESCUDO" if is_left else "Der: HECHIZOS  |  Izq: ESCUDO"
+        self._show_toast(f"Manos intercambiadas — {label}", 2.8)
+
     def _show_toast(self, text: str, duration: float = 2.6) -> None:
         self.toast_text = text
         self.toast_timer = duration
@@ -391,9 +403,7 @@ class ArcaneVisionGame:
 
         if event.key == pygame.K_h:
             is_left = self.vision.toggle_handedness()
-            self.audio.play("spell_switch", 0.9)
-            label = "ZURDO (Izq: Ataque / Der: Escudo)" if is_left else "DIESTRO (Der: Ataque / Izq: Escudo)"
-            self._show_toast(f"Modo {label}", 2.6)
+            self._handle_hand_swap_feedback(is_left, (config.SCREEN_WIDTH * 0.5, config.SCREEN_HEIGHT * 0.5))
             return
 
         if event.key == pygame.K_l:
@@ -447,6 +457,10 @@ class ArcaneVisionGame:
             self.shake_timer = max(0.0, self.shake_timer - dt)
             if self.shake_timer <= 0.0:
                 self.shake_strength = 0.0
+
+        # Evento de intercambio de manos por gesto de oración (juntar palmas)
+        if vs.handedness_swapped_event:
+            self._handle_hand_swap_feedback(vs.left_handed, vs.prayer_pos)
 
         # Evento de bloqueo/desbloqueo de ataque al cerrar puño
         if vs.lock_toggled_event:
@@ -683,8 +697,8 @@ class ArcaneVisionGame:
         if len(self.enemies) >= (7 if has_boss else 11):
             return
 
-        margin = 95.0
-        x = random.uniform(margin, config.SCREEN_WIDTH - margin)
+        margin = 54.0
+        x = random.uniform(config.ARENA_LEFT + margin, config.ARENA_RIGHT - margin)
         roll = random.random()
 
         if self.wave == 1:
@@ -717,7 +731,7 @@ class ArcaneVisionGame:
         count = random.randint(3, 4)
         for i in range(count):
             offset_x = (i - (count - 1) * 0.5) * 42.0
-            sx = max(70.0, min(config.SCREEN_WIDTH - 70.0, center_x + offset_x))
+            sx = max(config.ARENA_LEFT + 44.0, min(config.ARENA_RIGHT - 44.0, center_x + offset_x))
             self.enemies.append(EnjambreEtereo(sx, self.wave, phase_offset=i * 0.7))
 
     # ------------------------------------------------------------------
@@ -1094,13 +1108,20 @@ class ArcaneVisionGame:
         c = self.display.canvas
         c.fill(config.COLOR_BG_DARK)
 
-        # 1. Fondo de webcam con baja opacidad
+        # 1. Fondo de webcam completa (100% área de detección) con baja opacidad
         self._draw_camera_background(c, vs)
 
-        # 2. Campo estelar y línea del santuario inferior
+        # 2. Campo estelar, cortinas laterales de la zona de juego recortada y línea del santuario
         for sx, sy, sr, _ in self.stars:
             pygame.draw.circle(c, (110, 130, 190), (int(sx), int(sy)), max(1, int(sr * 0.65)))
-        pygame.draw.line(c, (42, 58, 112), (0, int(config.PLAYER_Y + 34)), (config.SCREEN_WIDTH, int(config.PLAYER_Y + 34)), 2)
+        self._draw_arena_frame(c)
+        pygame.draw.line(
+            c,
+            (58, 86, 152),
+            (config.ARENA_LEFT, int(config.PLAYER_Y + 34)),
+            (config.ARENA_RIGHT, int(config.PLAYER_Y + 34)),
+            2,
+        )
 
         # 3. Rayos láser, enemigos, proyectiles, partículas
         for laser in self.lasers:
@@ -1157,6 +1178,34 @@ class ArcaneVisionGame:
             self._camera_bg_surf = scaled
         if self._camera_bg_surf is not None:
             surface.blit(self._camera_bg_surf, (0, 0))
+
+    def _draw_arena_frame(self, surface: pygame.Surface) -> None:
+        """Delimita visualmente la arena de juego recortada manteniendo visible la cámara completa."""
+        curtain_alpha = 158
+        left_curtain = pygame.Surface((config.ARENA_LEFT, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+        left_curtain.fill((4, 6, 16, curtain_alpha))
+        surface.blit(left_curtain, (0, 0))
+
+        right_w = config.SCREEN_WIDTH - config.ARENA_RIGHT
+        right_curtain = pygame.Surface((right_w, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+        right_curtain.fill((4, 6, 16, curtain_alpha))
+        surface.blit(right_curtain, (config.ARENA_RIGHT, 0))
+
+        # Pilares luminosos arcanos marcando los bordes alcanzables de la arena
+        rail_col = config.COLOR_MEDITATION if self.mode == "meditation" else (72, 116, 196)
+        glow_surf = pygame.Surface((16, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.line(glow_surf, (*rail_col, 55), (8, 0), (8, config.SCREEN_HEIGHT), 10)
+        pygame.draw.line(glow_surf, (*rail_col, 185), (8, 0), (8, config.SCREEN_HEIGHT), 2)
+        surface.blit(glow_surf, (config.ARENA_LEFT - 8, 0))
+        surface.blit(glow_surf, (config.ARENA_RIGHT - 8, 0))
+
+        # Etiqueta discreta en los márgenes indicando que el rastreo sigue activo fuera del borde
+        margin_lbl = self.font_small.render("DETECCIÓN", True, (86, 102, 142))
+        surface.blit(margin_lbl, margin_lbl.get_rect(center=(config.ARENA_LEFT // 2, config.SCREEN_HEIGHT // 2)))
+        surface.blit(
+            margin_lbl,
+            margin_lbl.get_rect(center=(config.ARENA_RIGHT + right_w // 2, config.SCREEN_HEIGHT // 2)),
+        )
 
     def _draw_hand_overlays(self, surface: pygame.Surface, vs: VisionState) -> None:
         spec = config.SPELLS[self.selected_spell]
@@ -1262,6 +1311,32 @@ class ArcaneVisionGame:
             lbl = self.font_small.render(f"ESCUDO {int(self.shield.energy)}% (abre palma)", True, config.COLOR_TEXT_MUTED)
             surface.blit(lbl, lbl.get_rect(center=(int(vs.shield_pos[0]), int(vs.shield_pos[1] + 40))))
 
+        # Gesto de oración (juntar manos): círculo ritual de confirmación de intercambio
+        if vs.prayer_progress > 0.02:
+            px, py = vs.prayer_pos
+            pr = 42.0 + 18.0 * vs.prayer_progress
+            draw_runic_circle(
+                surface,
+                (px, py),
+                pr,
+                config.COLOR_TEXT_GOLD,
+                self.anim_time * 6.5,
+                charge=vs.prayer_progress,
+                sides=6,
+                alpha=240,
+            )
+            arc_rect = pygame.Rect(int(px - pr - 8), int(py - pr - 8), int((pr + 8) * 2), int((pr + 8) * 2))
+            pygame.draw.arc(
+                surface,
+                config.COLOR_SHIELD_PRIMARY,
+                arc_rect,
+                math.pi * 0.5,
+                math.pi * 0.5 + math.tau * vs.prayer_progress,
+                4,
+            )
+            p_lbl = self.font_small.render("INTERCAMBIANDO MANOS...", True, config.COLOR_TEXT_GOLD)
+            surface.blit(p_lbl, p_lbl.get_rect(center=(int(px), int(py - pr - 18))))
+
     def _draw_panel(self, surface: pygame.Surface, rect: pygame.Rect, border_color=config.COLOR_PANEL_BORDER) -> None:
         panel = pygame.Surface(rect.size, pygame.SRCALPHA)
         pygame.draw.rect(panel, config.COLOR_PANEL_BG, panel.get_rect(), border_radius=10)
@@ -1270,7 +1345,7 @@ class ArcaneVisionGame:
 
     def _draw_hud(self, surface: pygame.Surface, vs: VisionState) -> None:
         # 1. Panel superior izquierdo: Vida, Barra de Escudo (con cooldown), Puntuación y Modo
-        left_panel = pygame.Rect(16, 14, 316, 128)
+        left_panel = pygame.Rect(16, 14, 336, 128)
         self._draw_panel(
             surface,
             left_panel,
@@ -1310,8 +1385,8 @@ class ArcaneVisionGame:
         score_txt = self.font_medium.render(f"Puntos: {self.score:,}", True, config.COLOR_TEXT_GOLD)
         surface.blit(score_txt, (30, 74))
 
-        hand_mode = "ZURDO [H]" if vs.left_handed else "DIESTRO [H]"
-        mode_txt = self.font_small.render(f"Mano: {hand_mode}", True, config.COLOR_TEXT_MUTED)
+        hand_mode = "Izq:Ataque | Der:Escudo" if vs.left_handed else "Der:Ataque | Izq:Escudo"
+        mode_txt = self.font_small.render(f"{hand_mode} (Oración/[H])", True, config.COLOR_TEXT_MUTED)
         surface.blit(mode_txt, (30, 108))
 
         # 2. Panel superior central: Oleada, tiempo restante y barra del Jefe
@@ -1359,11 +1434,11 @@ class ArcaneVisionGame:
         status_surf = self.font_small.render(f"● {cam_text}  |  {audio_text}", True, cam_col)
         surface.blit(status_surf, (config.SCREEN_WIDTH - status_surf.get_width() - 18, 56))
 
-        # 4. Panel inferior izquierdo: Grimorio de 4 hechizos + Candado de bloqueo (puño / [L])
-        dock_x, dock_y = 16, config.SCREEN_HEIGHT - 74
+        # 4. Panel lateral izquierdo: Grimorio de 4 hechizos + Candado de bloqueo (puño / [L])
+        dock_x, dock_y = 16, 156
         for idx in range(1, 5):
             spec = config.SPELLS[idx]
-            rect = pygame.Rect(dock_x + (idx - 1) * 122, dock_y, 114, 58)
+            rect = pygame.Rect(dock_x, dock_y + (idx - 1) * 66, 132, 58)
             active = idx == self.selected_spell
             border = config.COLOR_LOCK_ACTIVE if (active and vs.spell_locked) else (spec.color if active else (54, 66, 102))
             self._draw_panel(surface, rect, border_color=border)
@@ -1387,8 +1462,8 @@ class ArcaneVisionGame:
         surface.blit(l_title, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 11))
         surface.blit(l_hint, (self.lock_badge_rect.x + 38, self.lock_badge_rect.y + 32))
 
-        # 5. Panel inferior derecho: Barra de Energía Especial (0..100%) + 2 Tipos de Especial
-        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 398, config.SCREEN_HEIGHT - 92, 382, 76)
+        # 5. Panel superior derecho (bajo estado): Barra de Energía Especial (0..100%) + 2 Tipos de Especial
+        gauge_panel = pygame.Rect(config.SCREEN_WIDTH - 336, 84, 320, 68)
         special_ready = self.special_energy >= config.SPECIAL_ENERGY_MAX
         active_sp_col = (
             config.COLOR_SPECIAL_SCATTER
@@ -1404,7 +1479,7 @@ class ArcaneVisionGame:
         else:
             header_txt = f"Barra Especial: {energy_pct}%"
             header_col = config.COLOR_TEXT_MAIN
-        surface.blit(self.font_small.render(header_txt, True, header_col), (gauge_panel.x + 12, gauge_panel.y + 9))
+        surface.blit(self.font_small.render(header_txt, True, header_col), (gauge_panel.x + 10, gauge_panel.y + 8))
 
         # Botón selector de tipo especial [E]
         mode_labels = {"auto": "[E] Auto", "scatter": "[E] Nova", "heavy": "[E] Lanza"}
@@ -1414,7 +1489,7 @@ class ArcaneVisionGame:
         surface.blit(m_surf, m_surf.get_rect(center=self.special_mode_btn_rect.center))
 
         # Barra principal de llenado (0..100%) + superposición de canalización bucal
-        meter = pygame.Rect(gauge_panel.x + 12, gauge_panel.y + 34, gauge_panel.w - 24, 15)
+        meter = pygame.Rect(gauge_panel.x + 10, gauge_panel.y + 31, gauge_panel.w - 20, 13)
         pygame.draw.rect(surface, (20, 24, 42), meter, border_radius=5)
         energy_ratio = max(0.0, min(1.0, self.special_energy / config.SPECIAL_ENERGY_MAX))
         fill_col = active_sp_col if special_ready else (112, 138, 210)
@@ -1433,10 +1508,10 @@ class ArcaneVisionGame:
         # Leyenda de los 2 tipos de tiro especial
         nova_col = config.COLOR_SPECIAL_SCATTER if self.active_special_preview == "scatter" else config.COLOR_TEXT_MUTED
         heavy_col = config.COLOR_SPECIAL_HEAVY if self.active_special_preview == "heavy" else config.COLOR_TEXT_MUTED
-        nova_surf = self.font_small.render("3-5d: Nova (Dispersos)", True, nova_col)
-        heavy_surf = self.font_small.render("1-2d: Lanza (Grandes)", True, heavy_col)
-        surface.blit(nova_surf, (gauge_panel.x + 12, gauge_panel.y + 54))
-        surface.blit(heavy_surf, (gauge_panel.right - heavy_surf.get_width() - 12, gauge_panel.y + 54))
+        nova_surf = self.font_small.render("3-5d: Nova", True, nova_col)
+        heavy_surf = self.font_small.render("1-2d: Lanza", True, heavy_col)
+        surface.blit(nova_surf, (gauge_panel.x + 10, gauge_panel.y + 48))
+        surface.blit(heavy_surf, (gauge_panel.right - heavy_surf.get_width() - 10, gauge_panel.y + 48))
 
     def _draw_title_overlay(self, surface: pygame.Surface, vs: VisionState) -> None:
         dim = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -1454,11 +1529,11 @@ class ArcaneVisionGame:
         lines = [
             ("Mano Dominante (1-4 dedos):", "Elige hechizo — 1 Arcano | 2 Ígneo | 3 Esmeralda | 4 Voltaica"),
             ("Puño Cerrado (0 dedos) / [L]:", "Bloquea o desbloquea el ataque actual para disparar sin cambios accidentales"),
-            ("Palma Abierta:", "Disparo rápido (con ataque bloqueado dispara seguro con 4-5 dedos)"),
+            ("Juntar Manos (Oración) / [H]:", "Intercambia al instante qué mano lanza hechizos y cuál sostiene el escudo"),
             ("Barra Especial (100% + Boca):", "Al llenarse, abre y cierra la boca: 3-5d Nova Dispersa | 1-2d Lanza Titánica"),
-            ("Escudo Angular (Mano Sec.):", "Tiene barra por tiempo, recupera lento y entra en cooldown si se agota"),
-            ("Inclinar Cabeza:", "Esquiva lateralmente los ataques y rayos láser del Señor del Vacío"),
-            ("Atajos:", "[F11/Alt+Enter] Completa • [H] Zurdo • [E] Tipo Especial • [L] Bloqueo • [R] Reiniciar"),
+            ("Escudo Angular (Mano Sec.):", "Barra temporal con recuperación lenta y enfriamiento (cooldown) si se agota"),
+            ("Arena Recortada + Cabeza:", "Área jugable acotada para llegar fácil a los bordes • Inclina cabeza para esquivar"),
+            ("Atajos:", "[F11/Alt+Enter] Completa • [E] Tipo Especial • [L] Bloqueo • [R] Reiniciar • [ESC] Salir"),
         ]
         y = card.y + 20
         for heading, desc in lines:

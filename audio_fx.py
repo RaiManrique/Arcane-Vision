@@ -272,6 +272,16 @@ class AudioFX:
         shield_ok = 0.55 * self._chirp(t, 480.0, 960.0) + 0.45 * np.sin(2.0 * np.pi * 1180.0 * t)
         self.sounds["shield_ready"] = self._to_sound(shield_ok * self._adsr(t, 0.006, 0.085) * 0.55)
 
+        # Intercambio de manos por gesto de oración (acorde místico ascendente)
+        t = self._time_axis(0.38)
+        swap = np.zeros_like(t)
+        for idx, freq in enumerate((440.0, 554.37, 659.25, 880.0)):
+            offset = idx * 0.045
+            mask = t >= offset
+            dt = t[mask] - offset
+            swap[mask] += np.sin(2.0 * np.pi * freq * dt) * np.exp(-dt / 0.14)
+        self.sounds["hand_swap"] = self._to_sound(swap * 0.42)
+
         # Game Over
         t = self._time_axis(0.85)
         doom = np.zeros_like(t)

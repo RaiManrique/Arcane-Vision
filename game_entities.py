@@ -394,7 +394,7 @@ class WizardAvatar:
         self.hit_flash = max(0.0, self.hit_flash - dt)
         move_clamped = max(-1.0, min(1.0, move_input))
         self.x += move_clamped * config.PLAYER_MAX_SPEED * dt
-        self.x = max(54.0, min(config.SCREEN_WIDTH - 54.0, self.x))
+        self.x = max(config.ARENA_LEFT + 34.0, min(config.ARENA_RIGHT - 34.0, self.x))
         self.lean += (move_clamped - self.lean) * min(1.0, dt * 12.0)
 
     def take_damage(self, amount: float) -> bool:
@@ -1201,8 +1201,8 @@ class InvocadorIgneo(Enemy):
             self.y = min(self.target_y, self.y + self.descent_speed * dt)
         else:
             self.x = max(
-                70.0,
-                min(config.SCREEN_WIDTH - 70.0, self.anchor_x + math.sin(self.anim_time * 1.4) * self.sway_amp),
+                config.ARENA_LEFT + 44.0,
+                min(config.ARENA_RIGHT - 44.0, self.anchor_x + math.sin(self.anim_time * 1.4) * self.sway_amp),
             )
             self.fire_timer -= dt
             if self.fire_timer <= 0.0:
@@ -1261,7 +1261,7 @@ class EnjambreEtereo(Enemy):
     def update(self, dt, player_x, enemy_projectiles, lasers, audio) -> bool:
         self.y += self.speed_y * dt
         self.x = self.base_x + math.sin(self.anim_time * self.zigzag_freq + self.phase) * self.zigzag_amp
-        self.x = max(36.0, min(config.SCREEN_WIDTH - 36.0, self.x))
+        self.x = max(config.ARENA_LEFT + 28.0, min(config.ARENA_RIGHT - 28.0, self.x))
         return super().update(dt, player_x, enemy_projectiles, lasers, audio)
 
     def draw(self, surface: pygame.Surface, number_font: pygame.font.Font) -> None:
@@ -1304,8 +1304,9 @@ class SenorDelVacio(Enemy):
         if self.y < self.target_y:
             self.y = min(self.target_y, self.y + 95.0 * dt)
         else:
-            # Desplazamiento majestuoso en la zona superior
-            self.x = config.SCREEN_WIDTH * 0.5 + math.sin(self.anim_time * 0.72) * 320.0
+            # Desplazamiento majestuoso dentro de la zona de juego recortada
+            max_sway = max(120.0, config.ARENA_WIDTH * 0.5 - self.radius - 36.0)
+            self.x = config.SCREEN_WIDTH * 0.5 + math.sin(self.anim_time * 0.72) * max_sway
 
             # Regeneración periódica de escudo elemental tras haber sido roto
             if self.shield_element is None:
